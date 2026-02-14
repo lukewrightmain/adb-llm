@@ -1,0 +1,32 @@
+# adb-llm device configuration
+# Copy to ~/.adb-llm/config.yaml and customize
+
+# Default remote paths on Android devices
+remote:
+  base_dir: /data/local/tmp/adb-llm
+  models_dir: /data/local/tmp/adb-llm/models
+  bin_dir: /data/local/tmp/adb-llm/bin
+  rpc_server: /data/local/tmp/adb-llm/bin/rpc-server
+
+# RPC port configuration
+rpc:
+  remote_port: 60000        # Port rpc-server listens on (on device)
+  base_local_port: 60001    # First localhost port for adb forward
+
+# llama-server defaults
+server:
+  host: 127.0.0.1
+  port: 8080
+  context_size: 2048
+
+# Health monitoring
+health:
+  check_interval: 5         # Seconds between health checks
+  thermal_warning: 42       # Celsius - warn above this
+
+# Device-specific overrides (optional)
+# devices:
+#   R5CR1234ABC:
+#     label: "Phone 1"
+#   R5CR5678DEF:
+#     label: "Phone 2"
