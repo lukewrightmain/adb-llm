@@ -25,10 +25,15 @@ class RpcManager:
         # Kill any existing instance
         await self.stop(device)
 
-        # Start in background
+        # Start in background (use /data/local/tmp for logs — Android has no /tmp)
+        log_path = "/data/local/tmp/rpc-server.log"
+        cache_dir = "/data/local/tmp/adb-llm/cache"
         cmd = (
-            f"nohup {rpc_bin} -H 0.0.0.0 -p {self._port} "
-            f"> /tmp/rpc-server.log 2>&1 &"
+            f"cd /data/local/tmp && "
+            f"export LLAMA_CACHE={cache_dir} && "
+            f"mkdir -p {cache_dir} && "
+            f"nohup {rpc_bin} -H 0.0.0.0 -p {self._port} --cache "
+            f"> {log_path} 2>&1 &"
         )
         await adb_shell(device.serial, cmd, check=False)
 
@@ -40,7 +45,7 @@ class RpcManager:
             await asyncio.sleep(1)
 
         # Grab logs for debugging
-        log_output = await adb_shell(device.serial, "cat /tmp/rpc-server.log", check=False)
+        log_output = await adb_shell(device.serial, f"cat {log_path}", check=False)
         raise RpcServerError(
             device.serial,
             f"Failed to start within {RPC_START_TIMEOUT}s. Log:\n{log_output[:500]}",
@@ -54,7 +59,7 @@ class RpcManager:
 
     async def is_running(self, device: DeviceInfo) -> bool:
         """Check if rpc-server is running on a device."""
-        out = await adb_shell(device.serial, "pgrep -f rpc-server", check=False)
+        out = await adb_shell(device.serial, "pidof rpc-server", check=False)
         return bool(out.strip())
 
     async def start_all(self, devices: list[DeviceInfo]) -> dict[str, bool]:

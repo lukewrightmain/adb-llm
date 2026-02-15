@@ -174,8 +174,9 @@ async def _bench_all(
 
 
 @devices.command()
-def setup() -> None:
-    """Set up remote directories and check prerequisites on all devices."""
+@click.option("--skip-binary", is_flag=True, help="Skip pushing rpc-server binary")
+def setup(skip_binary: bool) -> None:
+    """Set up remote directories and push rpc-server binary to all devices."""
     dm = DeviceManager()
     devs = _run(dm.discover())
     online = [d for d in devs if d.state != DeviceState.OFFLINE]
@@ -184,16 +185,57 @@ def setup() -> None:
         console.print("[yellow]No online devices found.[/]")
         return
 
-    async def _setup_all():
-        from adb_llm.core.config import REMOTE_BASE, REMOTE_MODELS_DIR, REMOTE_BIN_DIR
+    # Locate rpc-server binary
+    rpc_binary = None
+    if not skip_binary:
+        from pathlib import Path
+        from adb_llm.core.config import REMOTE_RPC_SERVER
 
-        for dev in online:
+        # Look in adb-llm/bin/ relative to the package
+        candidates = [
+            Path(__file__).resolve().parents[3] / "bin" / "rpc-server",
+            Path.home() / "adb-llm" / "bin" / "rpc-server",
+        ]
+        for c in candidates:
+            if c.is_file():
+                rpc_binary = c
+                break
+
+        if rpc_binary is None:
+            console.print(
+                "[yellow]rpc-server binary not found. Run scripts/build_rpc_server.sh first.[/]"
+            )
+            console.print("[yellow]Skipping binary push, creating directories only.[/]")
+
+    async def _setup_all():
+        from adb_llm.core.config import REMOTE_MODELS_DIR, REMOTE_BIN_DIR, REMOTE_RPC_SERVER
+
+        async def _setup_one(dev):
             try:
                 await adb_shell(dev.serial, f"mkdir -p {REMOTE_MODELS_DIR}")
                 await adb_shell(dev.serial, f"mkdir -p {REMOTE_BIN_DIR}")
                 console.print(f"  [green]{dev.serial}[/]: directories created")
+
+                if rpc_binary is not None:
+                    console.print(f"  [cyan]{dev.serial}[/]: pushing rpc-server...")
+                    await adb_push(dev.serial, str(rpc_binary), REMOTE_RPC_SERVER)
+                    await adb_shell(dev.serial, f"chmod +x {REMOTE_RPC_SERVER}")
+                    # Verify binary is executable (--help crashes on Android,
+                    # so just check the file exists and is the right arch)
+                    result = await adb_shell(
+                        dev.serial, f"file {REMOTE_RPC_SERVER}",
+                        timeout=10, check=False,
+                    )
+                    if "aarch64" in result.lower() or "arm" in result.lower() or "elf" in result.lower():
+                        console.print(f"  [green]{dev.serial}[/]: rpc-server verified (ARM64)")
+                    else:
+                        console.print(f"  [yellow]{dev.serial}[/]: rpc-server pushed (could not verify arch)")
             except Exception as e:
                 console.print(f"  [red]{dev.serial}[/]: {e}")
 
+        # Run setup on all devices in parallel
+        await asyncio.gather(*[_setup_one(d) for d in online])
+
+    console.print(f"Setting up {len(online)} device(s)...")
     _run(_setup_all())
     console.print("[green]Setup complete.[/]")

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import shutil
 import signal
 
@@ -55,6 +56,7 @@ class ServerManager:
             *args,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            env={**os.environ, "GGML_RPC_COMPRESS": "1"},
         )
 
         # Wait briefly to check it didn't immediately crash
