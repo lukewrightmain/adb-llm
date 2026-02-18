@@ -1,0 +1,12 @@
+[submodule "vendor/prima.cpp"]
+	path = vendor/prima.cpp
+	url = https://gitee.com/zonghang-li/prima.cpp.git
+[submodule "vendor/libzmq"]
+	path = vendor/libzmq
+	url = https://github.com/zeromq/libzmq.git
+[submodule "vendor/cppzmq"]
+	path = vendor/cppzmq
+	url = https://github.com/zeromq/cppzmq.git
+[submodule "vendor/HiGHS"]
+	path = vendor/HiGHS
+	url = https://github.com/ERGO-Code/HiGHS.git

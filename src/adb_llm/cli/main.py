@@ -7,6 +7,7 @@ from adb_llm.cli.devices import devices
 from adb_llm.cli.distribute import distribute
 from adb_llm.cli.tunnel import tunnel
 from adb_llm.cli.infer import infer
+from adb_llm.cli.prima import prima
 
 
 @click.group()
@@ -24,3 +25,4 @@ cli.add_command(devices)
 cli.add_command(distribute)
 cli.add_command(tunnel)
 cli.add_command(infer)
+cli.add_command(prima)

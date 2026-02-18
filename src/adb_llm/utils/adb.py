@@ -288,7 +288,12 @@ async def ssh_tunnel(
     Used to make ADB-forwarded ports on Windows accessible from this server.
     """
     args = [
-        "ssh", "-o", "ConnectTimeout=10",
+        "ssh",
+        "-o", "ConnectTimeout=10",
+        "-o", "Compression=no",
+        "-o", f"ControlPath=/tmp/ssh-prima-%r@%h:%p",
+        "-o", "ControlMaster=auto",
+        "-o", "ControlPersist=600",
         "-N",  # no remote command
         "-L", f"{local_port}:127.0.0.1:{remote_port}",
         SSH_HOST,
@@ -307,3 +312,203 @@ async def ssh_tunnel(
         logger.info("SSH tunnel: localhost:{} -> {}:{}", local_port, SSH_HOST, remote_port)
         return proc
     return None
+
+
+# --- Reverse tunnels (host -> phone) for prima.cpp ring topology ---
+
+
+async def adb_reverse(serial: str, remote_port: int, local_port: int) -> None:
+    """Create an ADB reverse tunnel on the Windows PC.
+
+    Makes the phone's localhost:remote_port route to Windows PC's localhost:local_port.
+    Combined with an SSH reverse tunnel, this lets the phone reach this server.
+    """
+    await _adb_run("-s", serial, "reverse", f"tcp:{remote_port}", f"tcp:{local_port}")
+    logger.info("Reverse {}:phone:{} -> winpc:{}", serial, remote_port, local_port)
+
+
+async def adb_reverse_remove(serial: str, remote_port: int) -> None:
+    """Remove a specific reverse tunnel on the Windows PC."""
+    await _adb_run("-s", serial, "reverse", "--remove", f"tcp:{remote_port}", check=False)
+
+
+async def adb_reverse_remove_all(serial: str) -> None:
+    """Remove all reverse tunnels for a device on the Windows PC."""
+    await _adb_run("-s", serial, "reverse", "--remove-all", check=False)
+
+
+async def adb_reverse_list(serial: str | None = None) -> list[tuple[str, int, int]]:
+    """List active reverse tunnels on the Windows PC.
+
+    Returns [(serial, remote_port_on_phone, local_port_on_winpc), ...].
+    """
+    args = ["reverse", "--list"]
+    if serial:
+        args = ["-s", serial] + args
+    stdout, _, _ = await _adb_run(*args, check=False)
+    result: list[tuple[str, int, int]] = []
+    for line in stdout.splitlines():
+        parts = line.split()
+        if len(parts) == 3:
+            s = parts[0]
+            rp = int(parts[1].replace("tcp:", ""))
+            lp = int(parts[2].replace("tcp:", ""))
+            result.append((s, rp, lp))
+    return result
+
+
+async def ssh_reverse_tunnel(
+    local_port: int,
+    remote_port: int,
+) -> asyncio.subprocess.Process:
+    """Create an SSH reverse tunnel: Windows PC:remote_port -> this server:local_port.
+
+    Used to make this server's ports accessible from the Windows PC side,
+    so that adb reverse tunnels can route phone traffic back here.
+    """
+    args = [
+        "ssh",
+        "-o", "ConnectTimeout=10",
+        "-o", "Compression=no",
+        "-o", f"ControlPath=/tmp/ssh-prima-%r@%h:%p",
+        "-o", "ControlMaster=auto",
+        "-o", "ControlPersist=600",
+        "-N",
+        "-R", f"{remote_port}:127.0.0.1:{local_port}",
+        SSH_HOST,
+    ]
+    proc = await asyncio.create_subprocess_exec(
+        *args,
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    await asyncio.sleep(1)
+    if proc.returncode is not None:
+        stderr = (await proc.stderr.read()).decode(errors="replace")
+        raise AdbError(
+            f"SSH reverse tunnel winpc:{remote_port}->localhost:{local_port}",
+            proc.returncode,
+            stderr,
+        )
+    logger.info(
+        "SSH reverse tunnel: {}:{} -> localhost:{}",
+        SSH_HOST, remote_port, local_port,
+    )
+    return proc
+
+
+# --- USB Tethering (RNDIS/NCM) for direct TCP/IP over USB ---
+
+
+async def enable_usb_tethering(
+    serial: str,
+    mode: str = "rndis",
+) -> bool:
+    """Enable USB tethering (RNDIS or NCM) on a phone while keeping ADB.
+
+    Sets USB functions to rndis,adb (or ncm,adb) which creates a USB
+    network interface on the WinPC. The phone gets IP 192.168.42.1 by
+    default (Android's built-in RNDIS/NCM IP).
+
+    Args:
+        serial: Device serial number.
+        mode: "rndis" or "ncm" (NCM preferred on Android 14+).
+
+    Returns:
+        True if the function switch succeeded.
+    """
+    func = f"{mode},adb"
+    logger.info("Enabling USB tethering on {} (mode={})", serial[:8], mode)
+
+    try:
+        await adb_shell(serial, f"svc usb setFunctions {func}", timeout=15)
+    except Exception as e:
+        logger.warning("USB function switch failed on {}: {}", serial[:8], e)
+        return False
+
+    # Wait for USB re-enumeration (function switch causes brief disconnect)
+    await asyncio.sleep(5)
+
+    # Verify ADB is still connected
+    try:
+        out = await adb_shell(serial, "getprop sys.usb.state", timeout=10)
+        if mode in out:
+            logger.info("USB tethering active on {}: {}", serial[:8], out.strip())
+            return True
+        else:
+            logger.warning("USB state on {} is '{}', expected '{}'", serial[:8], out.strip(), func)
+            return False
+    except Exception as e:
+        logger.error("ADB lost after tethering switch on {}: {}", serial[:8], e)
+        return False
+
+
+async def disable_usb_tethering(serial: str) -> None:
+    """Reset USB functions back to ADB-only (mtp,adb default)."""
+    try:
+        await adb_shell(serial, "svc usb setFunctions mtp,adb", timeout=15)
+        await asyncio.sleep(3)
+        logger.info("USB tethering disabled on {}", serial[:8])
+    except Exception:
+        logger.warning("Failed to reset USB functions on {}", serial[:8])
+
+
+async def get_tether_ip(serial: str) -> str | None:
+    """Get the phone's IP on the tethering interface (rndis0 or ncm0).
+
+    Returns the IP address string, or None if tethering is not active.
+    """
+    for iface in ("rndis0", "ncm0", "usb0"):
+        try:
+            out = await adb_shell(
+                serial,
+                f"ip addr show {iface} 2>/dev/null | grep 'inet ' | awk '{{print $2}}' | cut -d/ -f1",
+                timeout=10,
+            )
+            ip = out.strip()
+            if ip and ip != "":
+                logger.debug("Tether IP for {} on {}: {}", serial[:8], iface, ip)
+                return ip
+        except Exception:
+            continue
+    return None
+
+
+async def set_tether_ip(serial: str, ip: str, iface: str = "rndis0") -> bool:
+    """Set a static IP on the phone's tethering interface.
+
+    Args:
+        serial: Device serial number.
+        ip: IP address to assign (e.g., "10.0.0.1").
+        iface: Network interface name.
+
+    Returns:
+        True if successful.
+    """
+    try:
+        # Bring interface up and assign IP
+        await adb_shell(serial, f"ip link set {iface} up", timeout=10)
+        await adb_shell(serial, f"ip addr flush dev {iface}", timeout=10)
+        await adb_shell(serial, f"ip addr add {ip}/24 dev {iface}", timeout=10)
+        logger.info("Set tether IP {} on {} ({})", ip, serial[:8], iface)
+        return True
+    except Exception as e:
+        logger.error("Failed to set tether IP on {}: {}", serial[:8], e)
+        return False
+
+
+async def open_tether_firewall(serial: str, port_range: str = "9000:10100", iface: str = "rndis0") -> None:
+    """Open firewall for incoming connections on the tethering interface.
+
+    Uses iptables to allow TCP connections on the ZMQ port range.
+    """
+    try:
+        await adb_shell(
+            serial,
+            f"iptables -I INPUT -i {iface} -p tcp --dport {port_range} -j ACCEPT",
+            timeout=10,
+            check=False,
+        )
+        logger.info("Firewall opened on {} for {} ports {}", serial[:8], iface, port_range)
+    except Exception as e:
+        logger.warning("Firewall rule failed on {} (may need root): {}", serial[:8], e)
