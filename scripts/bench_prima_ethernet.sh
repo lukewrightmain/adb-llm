@@ -7,8 +7,10 @@
 #   ./scripts/bench_prima_ethernet.sh 5                # 5-phone ring
 #   ./scripts/bench_prima_ethernet.sh 10               # 10-phone ring
 #   ./scripts/bench_prima_ethernet.sh 20               # all 20 phones
-#   ./scripts/bench_prima_ethernet.sh 5 --spec         # speculative decoding
+#   ./scripts/bench_prima_ethernet.sh 5 --spec         # speculative decoding (draft-max=24)
+#   ./scripts/bench_prima_ethernet.sh 5 --spec --draft-max 32  # custom draft-max
 #   ./scripts/bench_prima_ethernet.sh 5 --sweep        # sweep 4,5,8,10,15,20
+#   ./scripts/bench_prima_ethernet.sh 5 --spec-sweep   # sweep spec with draft-max 8,16,24,32
 #   MODEL=Q4_0 ./scripts/bench_prima_ethernet.sh 5     # use Q4_0 model
 #
 # Prerequisites:
@@ -20,15 +22,25 @@ set -euo pipefail
 N_PHONES=${1:-5}
 SPEC_MODE=false
 SWEEP_MODE=false
-DRAFT_MAX=8
+SPEC_SWEEP_MODE=false
+DRAFT_MAX=24
+N_TOKENS=128
+SEED=42
+NO_INTERLEAVE=false
+BATCH_PIPELINE="${PRIMA_BATCH_PIPELINE:-1}"
 
 shift || true
 while [ $# -gt 0 ]; do
     case "$1" in
-        --spec)      SPEC_MODE=true ;;
-        --sweep)     SWEEP_MODE=true ;;
-        --draft-max) shift; DRAFT_MAX="$1" ;;
-        *)           echo "Unknown flag: $1"; exit 1 ;;
+        --spec)           SPEC_MODE=true ;;
+        --sweep)          SWEEP_MODE=true ;;
+        --spec-sweep)     SPEC_SWEEP_MODE=true; SPEC_MODE=true ;;
+        --draft-max)      shift; DRAFT_MAX="$1" ;;
+        -n)               shift; N_TOKENS="$1" ;;
+        --seed)           shift; SEED="$1" ;;
+        --no-interleave)  NO_INTERLEAVE=true ;;
+        --batch-pipeline) shift; BATCH_PIPELINE="$1" ;;
+        *)                echo "Unknown flag: $1"; exit 1 ;;
     esac
     shift
 done
@@ -175,7 +187,7 @@ taskset f0 ./adb-llm/bin/prima-worker \
   --world $n_phones --rank $rank \
   --master $rank0_ip --next $next_ip \
   --data-port $DATA_PORT --signal-port $SIGNAL_PORT \
-  -lw $lw -c 512 -n -1 -t 4 \
+  -lw $lw -c 512 -n -1 -t 4 -tb 4 \
   --no-mmap --prefetch \
   > /data/local/tmp/prima-worker.log 2>&1 &
 '" 2>/dev/null
@@ -214,19 +226,26 @@ taskset f0 ./adb-llm/bin/prima-worker \
         extra_flags="--model-draft $DRAFT_REMOTE --draft-max $DRAFT_MAX"
     fi
 
+    local env_prefix="PRIMA_BATCH_PIPELINE=$BATCH_PIPELINE "
+    if [ "$NO_INTERLEAVE" = "true" ]; then
+        env_prefix="${env_prefix}PRIMA_NO_INTERLEAVE=1 "
+        echo "  (interleaving DISABLED)"
+    fi
+
     echo ""
-    echo "Starting rank 0 on $rank0_ip (next=$next_ip)..."
+    echo "Starting rank 0 on $rank0_ip (next=$next_ip, batch_pipeline=$BATCH_PIPELINE)..."
     adb_shell "$rank0_ip" "sh -c '
 cd /data/local/tmp
-taskset f0 ./adb-llm/bin/$binary \
+${env_prefix}taskset f0 ./adb-llm/bin/$binary \
   -m $MODEL_REMOTE $extra_flags \
   --world $n_phones --rank 0 \
   --master $rank0_ip --next $next_ip \
   --data-port $DATA_PORT --signal-port $SIGNAL_PORT \
-  -lw $lw -c 512 -t 4 \
+  -lw $lw -c 512 -t 4 -tb 4 \
   --no-mmap --prefetch \
+  -s $SEED \
   -p \"Write a Python function that computes the Fibonacci sequence efficiently using dynamic programming.\" \
-  -n 64 \
+  -n $N_TOKENS \
   > /data/local/tmp/prima-worker.log 2>&1 &
 '" 2>/dev/null
     echo "  Rank 0 started. Waiting for inference..."
@@ -316,6 +335,7 @@ run_benchmark() {
     if [ "$spec" = "true" ]; then
         echo "  Draft:     $(basename "$DRAFT_REMOTE")"
         echo "  Draft max: $DRAFT_MAX tokens"
+        echo "  Batch pipeline: $BATCH_PIPELINE"
     fi
     echo ""
 
@@ -341,14 +361,32 @@ run_benchmark() {
 
 trap cleanup EXIT
 
-if $SWEEP_MODE; then
+if $SPEC_SWEEP_MODE; then
+    echo "============================================"
+    echo " SPECULATIVE SWEEP — ${N_PHONES} phones, draft-max: 8, 16, 24, 32"
+    echo "============================================"
+    echo ""
+    for dm in 8 16 24 32; do
+        DRAFT_MAX=$dm
+        run_benchmark "$N_PHONES" "true"
+        echo ""
+        sleep 5
+    done
+    echo ""
+    echo "============================================"
+    echo " SPEC SWEEP COMPLETE — check logs:"
+    for dm in 8 16 24 32; do
+        echo "  /tmp/prima-ethernet-${N_PHONES}phone-spec-d${dm}-${MODEL_QUANT}.log"
+    done
+    echo "============================================"
+elif $SWEEP_MODE; then
     echo "============================================"
     echo " ETHERNET SWEEP — testing 4, 5, 8, 10, 15, 20 phones"
     echo "============================================"
     echo ""
     for n in 4 5 8 10 15 20; do
         [ "$n" -le "${#ALL_PHONES[@]}" ] || continue
-        run_benchmark "$n" "false"
+        run_benchmark "$n" "$SPEC_MODE"
         echo ""
         sleep 5
     done
@@ -357,7 +395,9 @@ if $SWEEP_MODE; then
     echo " SWEEP COMPLETE — check logs:"
     for n in 4 5 8 10 15 20; do
         [ "$n" -le "${#ALL_PHONES[@]}" ] || continue
-        echo "  /tmp/prima-ethernet-${n}phone-${MODEL_QUANT}.log"
+        suffix="${MODEL_QUANT}"
+        $SPEC_MODE && suffix="spec-d${DRAFT_MAX}-${MODEL_QUANT}"
+        echo "  /tmp/prima-ethernet-${n}phone-${suffix}.log"
     done
     echo "============================================"
 else
