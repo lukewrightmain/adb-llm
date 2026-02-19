@@ -2,7 +2,9 @@
 
 Run large language models (33B parameters) across a ring of Android phones using [prima.cpp](https://github.com/nicojbae/prima.cpp) pipeline-ring parallelism with speculative decoding.
 
-**Peak result: 3.345 tok/s** on DeepSeek Coder 33B using 10 Samsung Galaxy Z Fold3 phones over Ethernet.
+**Peak result: 5.8 tok/s** on DeepSeek Coder 33B using 12 Samsung Galaxy Z Fold3 phones over Ethernet with interleaved speculative decoding + pipeline parallelism.
+
+> This is the **production** branch — the best-performing, tested configuration. See [Benchmarks](#benchmarks) for full results and [Device Onboarding](#device-onboarding) to add phones to the cluster.
 
 ## Architecture
 
@@ -72,7 +74,7 @@ This produces:
 | `bin/prima-host` | x86_64 Linux | Host ring node (optional, for host-in-ring mode) |
 | `bin/prima-host-spec` | x86_64 Linux | Host with speculative decoding |
 
-Build flags for Snapdragon 888: `-march=armv8.2-a+dotprod+fp16` (no `+i8mm` — Snapdragon 888 is ARMv8.4, i8mm needs ARMv8.6+).
+Build flags for Snapdragon 888: `-march=armv8.2-a+dotprod+fp16 -mcpu=cortex-a78 -Ofast -fno-finite-math-only` (no `+i8mm` — Snapdragon 888 is ARMv8.4, i8mm needs ARMv8.6+). Binaries are stripped (~3MB vs 40MB unstripped).
 
 ### 3. Connect Phones via Ethernet
 
@@ -138,11 +140,13 @@ The main benchmark script for Ethernet-connected phones. No tunnels needed — p
 
 ```bash
 Usage:
-  ./scripts/bench_prima_ethernet.sh <N_PHONES>                # Non-speculative
-  ./scripts/bench_prima_ethernet.sh <N_PHONES> --spec         # Speculative decoding
-  ./scripts/bench_prima_ethernet.sh <N_PHONES> --sweep        # Test 4,5,8,10,15,20 phones
-  ./scripts/bench_prima_ethernet.sh <N_PHONES> --draft-max N  # Custom draft batch size
-  MODEL=Q4_0 ./scripts/bench_prima_ethernet.sh <N_PHONES>     # Use Q4_0 model
+  ./scripts/bench_prima_ethernet.sh <N_PHONES>                     # Non-speculative
+  ./scripts/bench_prima_ethernet.sh <N_PHONES> --spec              # Speculative decoding
+  ./scripts/bench_prima_ethernet.sh <N_PHONES> --spec --draft-max 24 --seed 100  # Production config
+  ./scripts/bench_prima_ethernet.sh <N_PHONES> --sweep             # Test 4,5,8,10,15,20 phones
+  ./scripts/bench_prima_ethernet.sh <N_PHONES> -fa -c 256          # Flash attention + small context
+  ./scripts/bench_prima_ethernet.sh <N_PHONES> -t 8 --taskset ff   # All cores (not recommended)
+  MODEL=Q4_0 ./scripts/bench_prima_ethernet.sh <N_PHONES>          # Use Q4_0 model
 ```
 
 **What it does:**
@@ -216,6 +220,188 @@ The benchmark script calculates this automatically.
 
 Each phone binds its recv socket on port `9000 + rank` and connects its send socket to the next phone's recv port.
 
+## Device Onboarding
+
+Step-by-step guide to add a new phone to the cluster.
+
+### Prerequisites per Phone
+
+- Samsung Galaxy Z Fold3 (SM-F926U/U1/W) or similar Snapdragon 888 device
+- USB-C Ethernet adapter + Ethernet cable to shared switch
+- ~5GB free RAM (close all apps, disable background processes)
+- ~20GB free storage (for the 33B model)
+- ADB debugging enabled (Settings > Developer Options > USB Debugging)
+
+### Step 1: Enable ADB over TCP/IP
+
+Connect the phone via USB first, then switch to TCP/IP:
+
+```bash
+ADB=~/.local/bin/adb
+
+# If phone is new, connect via USB first to authorize
+$ADB devices   # should show the phone
+
+# Switch to TCP/IP mode
+$ADB tcpip 5555
+
+# Now connect over the network
+$ADB connect <phone-ip>:5555
+
+# Verify
+$ADB -s <phone-ip>:5555 shell echo ok
+```
+
+### Step 2: Create Directory Structure
+
+```bash
+$ADB -s <phone-ip>:5555 shell "mkdir -p /data/local/tmp/adb-llm/bin /data/local/tmp/adb-llm/models"
+```
+
+### Step 3: Deploy Binaries
+
+```bash
+$ADB -s <phone-ip>:5555 push bin/prima-worker /data/local/tmp/adb-llm/bin/prima-worker
+$ADB -s <phone-ip>:5555 push bin/prima-worker-spec /data/local/tmp/adb-llm/bin/prima-worker-spec
+$ADB -s <phone-ip>:5555 shell "chmod 755 /data/local/tmp/adb-llm/bin/prima-worker /data/local/tmp/adb-llm/bin/prima-worker-spec"
+```
+
+### Step 4: Deploy Model
+
+The 33B target model (~18GB) must be on every phone. The 1.3B draft model only needs to be on the rank 0 phone.
+
+```bash
+# Target model (ALL phones) — takes ~2 minutes per phone over Ethernet
+$ADB -s <phone-ip>:5555 push models/deepseek-coder-33b-instruct.Q4_K_M.gguf \
+  /data/local/tmp/adb-llm/models/deepseek-coder-33b-instruct.Q4_K_M.gguf
+
+# Draft model (rank 0 phone ONLY)
+$ADB -s <phone-ip>:5555 push models/deepseek-coder-1.3b-instruct.Q4_K_M.gguf \
+  /data/local/tmp/adb-llm/models/deepseek-coder-1.3b-instruct.Q4_K_M.gguf
+```
+
+### Step 5: Verify Phone-to-Phone Connectivity
+
+```bash
+# From the new phone, ping an existing cluster phone
+$ADB -s <new-phone-ip>:5555 shell "ping -c 3 <existing-phone-ip>"
+# Expected: 1-3ms round trip
+```
+
+### Step 6: Add to Benchmark Script
+
+Edit `scripts/bench_prima_ethernet.sh` and add the new phone IP to the `ALL_PHONES` array:
+
+```bash
+ALL_PHONES=(
+    10.105.0.12
+    10.105.0.13
+    ...
+    <new-phone-ip>   # ADD HERE
+)
+```
+
+### Step 7: Test
+
+```bash
+# Quick non-speculative test with just the new phone + 1 existing phone
+./scripts/bench_prima_ethernet.sh 2
+
+# Full cluster test
+./scripts/bench_prima_ethernet.sh 12 --spec --draft-max 24 --seed 100 -n 128
+```
+
+### Batch Onboarding (Multiple Phones)
+
+```bash
+PHONES=("10.105.0.50" "10.105.0.51" "10.105.0.52")
+ADB=~/.local/bin/adb
+
+for ip in "${PHONES[@]}"; do
+    echo "Onboarding $ip..."
+    $ADB connect ${ip}:5555
+    $ADB -s ${ip}:5555 shell "mkdir -p /data/local/tmp/adb-llm/bin /data/local/tmp/adb-llm/models"
+    $ADB -s ${ip}:5555 push bin/prima-worker /data/local/tmp/adb-llm/bin/prima-worker
+    $ADB -s ${ip}:5555 push bin/prima-worker-spec /data/local/tmp/adb-llm/bin/prima-worker-spec
+    $ADB -s ${ip}:5555 shell "chmod 755 /data/local/tmp/adb-llm/bin/prima-worker /data/local/tmp/adb-llm/bin/prima-worker-spec"
+    $ADB -s ${ip}:5555 push models/deepseek-coder-33b-instruct.Q4_K_M.gguf \
+      /data/local/tmp/adb-llm/models/deepseek-coder-33b-instruct.Q4_K_M.gguf &
+done
+wait
+echo "All phones onboarded. Model push may still be running in background."
+```
+
+### Warnings
+
+- **DO NOT `adb reboot`** phones connected via Ethernet ADB — this drops the connection. Reconnect with `adb connect <ip>:5555`.
+- **DO NOT build with `+i8mm`** — Snapdragon 888 is ARMv8.4 and will SIGILL.
+- **Always use `--no-mmap`** — without it, mmap page thrashing causes 87x slowdown.
+- Each phone needs **120 seconds** after starting to load the model with `--no-mmap`. The benchmark script handles this automatically.
+
+---
+
+## Benchmarks
+
+### Production Configuration (Best Throughput)
+
+12-phone Ethernet ring, DeepSeek Coder 33B Q4_K_M, speculative decoding with 1.3B draft model:
+
+```
+Phones:     12x Samsung Galaxy Z Fold3 (Snapdragon 888)
+Model:      DeepSeek Coder 33B Q4_K_M (62 layers, ~18.6 GiB)
+Draft:      DeepSeek Coder 1.3B Q4_K_M (~832 MiB)
+Settings:   --no-mmap -t 4 taskset f0 --draft-max 24 --seed 100
+Transport:  Ethernet direct IP (phone-to-phone, no tunnels)
+```
+
+| Metric | Value |
+|--------|-------|
+| **Decode speed** | **5.8 tok/s** |
+| Acceptance rate | 74.5% |
+| Pipeline recv time | ~2260ms per cycle |
+| Draft time | ~920ms per cycle |
+| Per-layer compute | ~12ms |
+| Per-hop total | ~65ms (compute + overhead) |
+
+### Scaling Results (Interleaved Pipeline, d24, seed 100)
+
+| Phones | tok/s | Accept% | Notes |
+|--------|-------|---------|-------|
+| 8 | 4.7 | 74.5% | |
+| 10 | 5.5 | 74.5% | |
+| 11 | 6.1 | 74.5% | |
+| **12** | **5.8** | **74.5%** | **Production config** |
+| 15 | 5.8 | 74.5% | Diminishing returns |
+| 20 | 5.6 | 74.5% | Communication overhead grows |
+
+Sweet spot: **11-12 phones** for single-request throughput. Beyond 12, more hops add more overhead than fewer layers per phone saves.
+
+### Optimization History
+
+| Milestone | tok/s | Change |
+|-----------|-------|--------|
+| Non-speculative baseline (any phone count) | 1.04 | — |
+| Speculative d8, 10 phones | 3.3 | +3.2x |
+| Interleaved pipeline, d24 | 6.1 | +1.8x |
+| Packed metadata + stripped binary | 5.8 | Consistent same-session |
+
+> Note: Absolute numbers vary between sessions (thermal, background load). The 6.1 and 5.8 results are from different sessions. Same-session A/B testing confirmed packed metadata gives **+26% improvement** over baseline code (4.6 → 5.8 tok/s).
+
+### What Doesn't Help
+
+Tested and rejected (see [docs/compute-optimization-results.md](docs/compute-optimization-results.md)):
+
+| Optimization | Result | Why |
+|---|---|---|
+| Q4_0 quantization | -44% | Repacked GEMV removed; lower quality tanks acceptance |
+| Flash attention (`-fa`) | ~0% | Attention is <5% of decode compute |
+| Context reduction (`-c 256`) | ~0% | KV cache already small |
+| More threads (`-t 8`) | -22% | A55 little cores slow down GEMV |
+| Fewer threads (`-t 3`) | -45% | Not enough parallelism |
+| `-Ofast` compiler flag | ~0% | NEON intrinsics dominate the hot path |
+
+---
+
 ## How It Works
 
 ### Ring Topology
@@ -244,9 +430,9 @@ This transforms the bottleneck from `9 * ring_latency` to `ring_latency + 8 * pe
 
 ## Results
 
-See [RESULTS.md](RESULTS.md) for detailed benchmark results and analysis.
+See [RESULTS.md](RESULTS.md) for full benchmark history and [docs/compute-optimization-results.md](docs/compute-optimization-results.md) for optimization experiments.
 
-**TL;DR:** 10 phones at 3.345 tok/s is the sweet spot for DeepSeek Coder 33B Q4_K_M.
+**TL;DR:** 12 phones at ~5.8 tok/s with interleaved speculative decoding + pipeline parallelism.
 
 ## Project Structure
 
