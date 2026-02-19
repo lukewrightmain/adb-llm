@@ -28,6 +28,11 @@ N_TOKENS=128
 SEED=42
 NO_INTERLEAVE=false
 BATCH_PIPELINE="${PRIMA_BATCH_PIPELINE:-1}"
+FLASH_ATTN=false
+CTX_SIZE=512
+THREADS=4
+TASKSET="f0"
+EXTRA_FLAGS=""
 
 shift || true
 while [ $# -gt 0 ]; do
@@ -40,6 +45,11 @@ while [ $# -gt 0 ]; do
         --seed)           shift; SEED="$1" ;;
         --no-interleave)  NO_INTERLEAVE=true ;;
         --batch-pipeline) shift; BATCH_PIPELINE="$1" ;;
+        -fa|--flash-attn) FLASH_ATTN=true ;;
+        -c)               shift; CTX_SIZE="$1" ;;
+        -t)               shift; THREADS="$1" ;;
+        --taskset)        shift; TASKSET="$1" ;;
+        --extra)          shift; EXTRA_FLAGS="$1" ;;
         *)                echo "Unknown flag: $1"; exit 1 ;;
     esac
     shift
@@ -180,15 +190,18 @@ start_phone_workers() {
         local next_idx=$(( (rank + 1) % n_phones ))
         local next_ip="${phones[$next_idx]}"
 
+        local fa_flag=""
+        [ "$FLASH_ATTN" = "true" ] && fa_flag="-fa"
+
         adb_shell "$ip" "sh -c '
 cd /data/local/tmp
-taskset f0 ./adb-llm/bin/prima-worker \
+taskset $TASKSET ./adb-llm/bin/prima-worker \
   -m $MODEL_REMOTE \
   --world $n_phones --rank $rank \
   --master $rank0_ip --next $next_ip \
   --data-port $DATA_PORT --signal-port $SIGNAL_PORT \
-  -lw $lw -c 512 -n -1 -t 4 -tb 4 \
-  --no-mmap --prefetch \
+  -lw $lw -c $CTX_SIZE -n -1 -t $THREADS -tb $THREADS \
+  --no-mmap --prefetch $fa_flag $EXTRA_FLAGS \
   > /data/local/tmp/prima-worker.log 2>&1 &
 '" 2>/dev/null
         echo "  Started rank $rank on $ip (next=$next_ip, master=$rank0_ip)"
@@ -232,17 +245,20 @@ taskset f0 ./adb-llm/bin/prima-worker \
         echo "  (interleaving DISABLED)"
     fi
 
+    local fa_flag=""
+    [ "$FLASH_ATTN" = "true" ] && fa_flag="-fa"
+
     echo ""
-    echo "Starting rank 0 on $rank0_ip (next=$next_ip, batch_pipeline=$BATCH_PIPELINE)..."
+    echo "Starting rank 0 on $rank0_ip (next=$next_ip, batch_pipeline=$BATCH_PIPELINE, ctx=$CTX_SIZE, threads=$THREADS, fa=$FLASH_ATTN)..."
     adb_shell "$rank0_ip" "sh -c '
 cd /data/local/tmp
-${env_prefix}taskset f0 ./adb-llm/bin/$binary \
+${env_prefix}taskset $TASKSET ./adb-llm/bin/$binary \
   -m $MODEL_REMOTE $extra_flags \
   --world $n_phones --rank 0 \
   --master $rank0_ip --next $next_ip \
   --data-port $DATA_PORT --signal-port $SIGNAL_PORT \
-  -lw $lw -c 512 -t 4 -tb 4 \
-  --no-mmap --prefetch \
+  -lw $lw -c $CTX_SIZE -t $THREADS -tb $THREADS \
+  --no-mmap --prefetch $fa_flag $EXTRA_FLAGS \
   -s $SEED \
   -p \"Write a Python function that computes the Fibonacci sequence efficiently using dynamic programming.\" \
   -n $N_TOKENS \
@@ -337,6 +353,10 @@ run_benchmark() {
         echo "  Draft max: $DRAFT_MAX tokens"
         echo "  Batch pipeline: $BATCH_PIPELINE"
     fi
+    echo "  Context:   $CTX_SIZE"
+    echo "  Threads:   $THREADS"
+    echo "  Flash attn: $FLASH_ATTN"
+    [ -n "$EXTRA_FLAGS" ] && echo "  Extra:     $EXTRA_FLAGS"
     echo ""
 
     cleanup 2>/dev/null || true

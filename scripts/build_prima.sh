@@ -194,10 +194,10 @@ make llama-cli -j"$(nproc)" \
     RANLIB="$RANLIB_ANDROID" \
     UNAME_S=Linux \
     UNAME_M=android_arm64 \
-    CFLAGS="-march=armv8.2-a+dotprod+fp16" \
-    CXXFLAGS="-march=armv8.2-a+dotprod+fp16" \
+    CFLAGS="-march=armv8.2-a+dotprod+fp16 -mcpu=cortex-a78 -Ofast -fno-finite-math-only -ffunction-sections -fdata-sections" \
+    CXXFLAGS="-march=armv8.2-a+dotprod+fp16 -mcpu=cortex-a78 -Ofast -fno-finite-math-only -ffunction-sections -fdata-sections" \
     CPPFLAGS="${WORKER_CPPFLAGS}" \
-    LDFLAGS="${WORKER_LDFLAGS}" \
+    LDFLAGS="${WORKER_LDFLAGS} -Wl,--gc-sections -Wl,--strip-all" \
     GGML_NO_OPENMP=1 \
     $WORKER_MAKE_EXTRAS
 
@@ -232,10 +232,10 @@ make llama-speculative -j"$(nproc)" \
     RANLIB="$RANLIB_ANDROID" \
     UNAME_S=Linux \
     UNAME_M=android_arm64 \
-    CFLAGS="-march=armv8.2-a+dotprod+fp16" \
-    CXXFLAGS="-march=armv8.2-a+dotprod+fp16" \
+    CFLAGS="-march=armv8.2-a+dotprod+fp16 -mcpu=cortex-a78 -Ofast -fno-finite-math-only -ffunction-sections -fdata-sections" \
+    CXXFLAGS="-march=armv8.2-a+dotprod+fp16 -mcpu=cortex-a78 -Ofast -fno-finite-math-only -ffunction-sections -fdata-sections" \
     CPPFLAGS="${WORKER_CPPFLAGS}" \
-    LDFLAGS="${WORKER_LDFLAGS}" \
+    LDFLAGS="${WORKER_LDFLAGS} -Wl,--gc-sections -Wl,--strip-all" \
     GGML_NO_OPENMP=1 \
     $WORKER_MAKE_EXTRAS
 

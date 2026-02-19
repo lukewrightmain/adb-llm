@@ -179,6 +179,66 @@ flash attention, context reduction.
 `PRIMA_BATCH_PIPELINE=N` — set batch size at runtime (default 1). Only increase on
 hardware with i8mm or GPU-accelerated GEMM.
 
+---
+
+# Compute Optimization Experiments (Feb 2026)
+
+Attempted to reduce per-layer compute from ~12ms to ~10ms on Snapdragon 888.
+
+## Same-Session A/B Test (definitive comparison)
+
+| Config | tok/s | Pipeline recv | Accept% | Notes |
+|--------|-------|---------------|---------|-------|
+| Baseline code + -O3 -g | 4.625 | 3080ms | 74.5% | Original binary |
+| Packed metadata + -Ofast -mcpu=cortex-a78 --strip-all | 5.816 | 2261ms | 74.5% | **+26% improvement** |
+
+The packed metadata code change provides the real improvement. Compiler flags have
+minimal impact on their own (NEON intrinsics dominate the hot path).
+
+## Compiler Flags (`-Ofast -mcpu=cortex-a78 --gc-sections --strip-all`)
+- Binary size: 40MB → 3.1MB (strip + gc-sections)
+- Per-layer compute: ~12ms (unchanged from -O3)
+- `-Ofast` requires `-fno-finite-math-only` (ggml.c compile-time check)
+- **Verdict:** Binary size win, negligible speed impact.
+
+## Q4_0 Quantization
+Expected: faster NEON GEMV via specialized kernels in ggml-aarch64.c.
+Reality: Q4_0 repacked types (`Q4_0_4_4`, `Q4_0_4_8`, `Q4_0_8_8`) have been
+**removed** from this version of prima.cpp. Standard Q4_0 uses the same generic
+dot product path.
+
+| Config | tok/s | Accept% | Notes |
+|--------|-------|---------|-------|
+| Q4_K_M | 5.874 | 74.5% | Baseline |
+| Q4_0 | 3.298 | 40.7% | **WORSE** — slower + lower quality |
+
+Q4_0 acceptance drops because the lower quantization quality diverges from the
+draft model (Q4_K_M 1.3B). Not a viable optimization path.
+
+## Flash Attention (`-fa`) + Context Reduction (`-c 256`)
+- Graph nodes: 160 → 141 (flash attn does simplify the graph)
+- tok/s: 5.885 (vs 5.874 without) — **negligible improvement**
+- For single-token decode with <200 tokens context, attention is not the bottleneck
+
+## Thread Sweep
+
+| Threads | Taskset | tok/s | Notes |
+|---------|---------|-------|-------|
+| 3 | f0 (big cores) | 3.231 | Fewer threads = slower GEMV |
+| **4** | **f0 (big cores)** | **5.816** | **Optimal** |
+| 8 | ff (all cores) | 4.533 | A55 little cores drag down GEMV |
+
+**Verdict:** 4 threads on big cores (Cortex-A78 + X1) remains optimal.
+
+## Key Learnings
+1. **Packed metadata is the real win**: replacing ZMQ multipart with binary struct
+   saves ~800ms/cycle (3080ms → 2260ms pipeline time)
+2. **Compiler flags don't help NEON intrinsics**: The hot path in Q4_K_M is
+   hand-written NEON assembly; `-Ofast` and `-mcpu` can't improve it
+3. **Q4_0 repacked GEMV was removed**: No specialized ARM kernels available
+4. **Snapdragon 888 big.LITTLE**: A55 cores hurt parallel GEMV; always pin to big cores
+5. **Flash attention irrelevant for decode**: Only helps with long context + prompt eval
+
 ## Date
 
-Benchmarks run: February 18, 2026
+Benchmarks run: February 18-19, 2026
