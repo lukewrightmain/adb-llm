@@ -133,6 +133,52 @@ All benchmark logs are saved to `/tmp/`:
 - `/tmp/prima-ethernet-15phone-spec-d8-Q4_K_M.log`
 - `/tmp/prima-ethernet-20phone-spec-d8-Q4_K_M.log`
 
+---
+
+# Throughput Optimization Experiments (Feb 2026)
+
+After achieving 6.117 tok/s with interleaved pipeline + d24, we investigated
+reducing the ~86ms/hop overhead (60ms compute + 26ms ZMQ/metadata).
+
+## Optimization 1: Packed Metadata
+Replaced 14-frame ZMQ multipart with single-frame binary struct (32-byte header + arrays).
+
+| Config | tok/s | Notes |
+|--------|-------|-------|
+| Baseline (14 frames) | 6.117 | Original multipart |
+| Packed (1 frame) | 6.146 | No regression, saves ~2ms/hop |
+
+**Verdict:** Neutral/slight improvement. Compute dominates.
+
+## Optimization 2: Socket Tuning
+ZMQ I/O threads 2→4, SNDBUF/RCVBUF 256KB, startup sleep 100→10ms, ZMQ_LINGER 100ms.
+
+**Verdict:** No measurable impact.
+
+## Optimization 3: Batch Pipeline Tokens
+Send multiple tokens through pipeline per cycle (PRIMA_BATCH_PIPELINE=N).
+
+| Batch Size | tok/s | Notes |
+|------------|-------|-------|
+| 1 (default) | 6.146 | Single token per cycle |
+| 2 | 5.02 | GEMV 2x time, not 1.3x |
+| 4 | 3.99 | ARM NEON GEMV scales linearly |
+
+**Verdict:** FAILED on this hardware. ARM NEON GEMV on Snapdragon 888 (no i8mm)
+has linear compute scaling — 4 tokens takes 3.3x single-token time, not ~1.5x.
+Only useful on hardware with i8mm (ARMv8.6+) or GPU batched GEMM.
+
+## Key Finding
+The 86ms/hop is **compute-dominated** (60ms/hop = ~12ms/layer x 5 layers). ZMQ and
+metadata overhead (~26ms) is a minority. Further throughput gains require reducing
+per-layer compute time, not networking optimizations. Next steps: Q4_0 quantization
+(hand-optimized NEON GEMV kernels), compiler flags (-Ofast, -mcpu=cortex-a78),
+flash attention, context reduction.
+
+## Environment Variable
+`PRIMA_BATCH_PIPELINE=N` — set batch size at runtime (default 1). Only increase on
+hardware with i8mm or GPU-accelerated GEMM.
+
 ## Date
 
 Benchmarks run: February 18, 2026
