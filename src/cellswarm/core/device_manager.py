@@ -7,6 +7,9 @@ import asyncio
 from loguru import logger
 
 from cellswarm.core.config import REMOTE_BASE, REMOTE_SWARM_RPC
+
+# Legacy paths from before the adb-llm → cellswarm rename
+_LEGACY_REMOTE_BASE = "/data/local/tmp/adb-llm"
 from cellswarm.core.device import DeviceInfo, DeviceState
 from cellswarm.core.errors import DeviceNotFoundError
 from cellswarm.utils.adb import adb_devices, adb_shell
@@ -19,7 +22,28 @@ class DeviceManager:
         self.devices: dict[str, DeviceInfo] = {}
 
     async def discover(self) -> list[DeviceInfo]:
-        """Scan for all connected ADB devices."""
+        """Scan for all connected ADB devices.
+
+        In direct mode, also ensures devices from config are ``adb connect``-ed
+        before scanning.
+        """
+        from cellswarm.core.config import load_config
+
+        cfg = load_config()
+
+        # In direct mode, auto-connect configured devices
+        if cfg.mode == "direct" and cfg.devices:
+            from cellswarm.utils.adb import _local_run
+            for entry in cfg.devices:
+                serial = entry.serial
+                try:
+                    await _local_run(
+                        [cfg.adb_bin, "connect", serial],
+                        timeout=10, check=False,
+                    )
+                except Exception:
+                    pass  # best effort
+
         raw = await adb_devices()
         self.devices.clear()
         for d in raw:
@@ -44,6 +68,15 @@ class DeviceManager:
         if dev.state == DeviceState.OFFLINE:
             return dev
 
+        # Preserve previous good values so timeouts don't reset RAM etc.
+        prev_ram = dev.total_ram_mb
+        prev_avail = dev.available_ram_mb
+        prev_storage = dev.storage_free_mb
+        prev_cores = dev.cpu_cores
+        prev_arch = dev.cpu_arch
+        prev_android = dev.android_version
+        prev_models = dev.models
+
         try:
             results = await asyncio.gather(
                 adb_shell(serial, "getprop ro.product.model", check=False),
@@ -54,25 +87,51 @@ class DeviceManager:
                 adb_shell(serial, "getprop ro.build.version.release", check=False),
                 adb_shell(serial, "cat /sys/class/thermal/thermal_zone0/temp", check=False),
                 adb_shell(serial, f"ls {REMOTE_SWARM_RPC}", check=False),
-                adb_shell(serial, f"ls {REMOTE_BASE}/models/", check=False),
+                adb_shell(serial, f"ls {REMOTE_BASE}/models/ {_LEGACY_REMOTE_BASE}/models/ 2>/dev/null", check=False),
+                # Also check legacy binary path
+                adb_shell(serial, f"ls {_LEGACY_REMOTE_BASE}/bin/prima-worker", check=False),
             )
 
             dev.model = results[0].strip() or dev.model
-            dev.total_ram_mb, dev.available_ram_mb = _parse_meminfo(results[1])
-            dev.storage_free_mb = _parse_df(results[2])
-            dev.cpu_cores = _parse_int(results[3], 0)
-            dev.cpu_arch = results[4].strip()
-            dev.android_version = results[5].strip()
+
+            total, avail = _parse_meminfo(results[1])
+            dev.total_ram_mb = total if total > 0 else prev_ram
+            dev.available_ram_mb = avail if avail > 0 else prev_avail
+
+            storage = _parse_df(results[2])
+            dev.storage_free_mb = storage if storage > 0 else prev_storage
+
+            cores = _parse_int(results[3], 0)
+            dev.cpu_cores = cores if cores > 0 else prev_cores
+
+            arch = results[4].strip()
+            dev.cpu_arch = arch if arch else prev_arch
+
+            android = results[5].strip()
+            dev.android_version = android if android else prev_android
+
             dev.thermal_temp_c = _parse_thermal(results[6])
+
+            # Check new path first, then legacy
             dev.has_swarm_rpc = "No such file" not in results[7] and results[7].strip() != ""
             if dev.has_swarm_rpc:
                 dev.swarm_rpc_path = REMOTE_SWARM_RPC
-            dev.models = _parse_model_list(results[8])
+            elif "No such file" not in results[9] and results[9].strip() != "":
+                dev.has_swarm_rpc = True
+                dev.swarm_rpc_path = f"{_LEGACY_REMOTE_BASE}/bin/prima-worker"
+
+            models = _parse_model_list(results[8])
+            dev.models = models if models else prev_models
+
             dev.state = DeviceState.READY
 
         except Exception as e:
             logger.error("Probe failed for {}: {}", serial, e)
-            dev.state = DeviceState.ERROR
+            # Keep READY if we had good data before, only ERROR if never probed
+            if prev_ram > 0:
+                dev.state = DeviceState.READY
+            else:
+                dev.state = DeviceState.ERROR
 
         return dev
 

@@ -27,11 +27,22 @@ from cellswarm.core.config import (
     REMOTE_MODELS_DIR,
     REMOTE_SWARM_WORKER,
 )
+
+# Legacy paths from before adb-llm → cellswarm rename
+_LEGACY_REMOTE_BASE = "/data/local/tmp/adb-llm"
+_LEGACY_REMOTE_WORKER = f"{_LEGACY_REMOTE_BASE}/bin/prima-worker"
+_LEGACY_REMOTE_MODELS_DIR = f"{_LEGACY_REMOTE_BASE}/models"
 from cellswarm.core.device import DeviceInfo
 from cellswarm.core.device_manager import DeviceManager
 from cellswarm.core.errors import InferenceError
 from cellswarm.inference.swarm_manager import SwarmManager
 from cellswarm.transport.swarm_ring import SwarmRingTransport
+from cellswarm.transport.ethernet_ring import EthernetRingTransport
+
+
+def _is_ethernet(device: DeviceInfo) -> bool:
+    """Check if a device is ethernet-connected (IP:port serial)."""
+    return ":" in device.serial
 
 
 class SwarmOrchestrator:
@@ -39,10 +50,11 @@ class SwarmOrchestrator:
 
     def __init__(self) -> None:
         self.device_manager = DeviceManager()
-        self.ring_transport = SwarmRingTransport()
+        self.ring_transport: SwarmRingTransport | EthernetRingTransport = SwarmRingTransport()
         self.swarm_manager = SwarmManager()
         self.console = Console()
         self._host_process: asyncio.subprocess.Process | None = None
+        self._use_ethernet = False
 
     async def start(
         self,
@@ -65,51 +77,89 @@ class SwarmOrchestrator:
         if not devices:
             raise InferenceError("No devices available")
 
-        # Check cellswarm-worker binary exists on devices
+        # Check worker binary exists on devices (new or legacy path)
         ready: list[DeviceInfo] = []
+        worker_paths: dict[str, str] = {}  # serial -> actual worker path
         for dev in devices:
             from cellswarm.utils.adb import adb_shell
+            # Check new path first
             out = await adb_shell(dev.serial, f"ls {REMOTE_SWARM_WORKER}", check=False)
             if "No such file" not in out and out.strip():
                 ready.append(dev)
+                worker_paths[dev.serial] = REMOTE_SWARM_WORKER
             else:
-                logger.warning("{} missing cellswarm-worker binary", dev.serial[:8])
+                # Check legacy path (prima-worker)
+                out2 = await adb_shell(dev.serial, f"ls {_LEGACY_REMOTE_WORKER}", check=False)
+                if "No such file" not in out2 and out2.strip():
+                    ready.append(dev)
+                    worker_paths[dev.serial] = _LEGACY_REMOTE_WORKER
+                    logger.info("{} using legacy prima-worker binary", dev.serial[:8])
+                else:
+                    logger.warning("{} missing worker binary", dev.serial[:8])
 
         if not ready:
             raise InferenceError(
-                "No devices have cellswarm-worker installed. Run:\n"
-                "  ./scripts/build_cellswarm.sh   (build the binary)\n"
-                "  cellswarm devices setup      (push to phones)"
+                "No devices have a worker binary installed.\n"
+                "Looking for:\n"
+                f"  {REMOTE_SWARM_WORKER}\n"
+                f"  {_LEGACY_REMOTE_WORKER}\n"
+                "Build with: ./scripts/build_prima.sh"
             )
 
-        self.console.print(f"  Found {len(ready)} device(s) with cellswarm-worker\n")
+        self.console.print(f"  Found {len(ready)} device(s) with worker binary\n")
+        # Store for later use by SwarmManager
+        self._worker_paths = worker_paths
 
-        # 2. Verify model exists on all phones
+        # 2. Verify model exists on all phones (check new + legacy paths)
         self.console.print("[bold]2/5[/] Checking model on devices...")
         model_name = os.path.basename(model_path)
-        remote_model = f"{REMOTE_MODELS_DIR}/{model_name}"
+        remote_model_new = f"{REMOTE_MODELS_DIR}/{model_name}"
+        remote_model_legacy = f"{_LEGACY_REMOTE_MODELS_DIR}/{model_name}"
         devices_with_model: list[DeviceInfo] = []
+        model_paths: dict[str, str] = {}  # serial -> actual model path on device
 
         for dev in ready:
             from cellswarm.utils.adb import adb_shell
-            out = await adb_shell(dev.serial, f"ls -la {remote_model}", check=False)
+            # Check new path first
+            out = await adb_shell(dev.serial, f"ls -la {remote_model_new}", check=False)
             if "No such file" not in out and out.strip():
                 devices_with_model.append(dev)
+                model_paths[dev.serial] = remote_model_new
             else:
-                logger.warning("{} missing model {}", dev.serial[:8], model_name)
+                # Check legacy path
+                out2 = await adb_shell(dev.serial, f"ls -la {remote_model_legacy}", check=False)
+                if "No such file" not in out2 and out2.strip():
+                    devices_with_model.append(dev)
+                    model_paths[dev.serial] = remote_model_legacy
+                    logger.info("{} using legacy model path", dev.serial[:8])
+                else:
+                    logger.warning("{} missing model {}", dev.serial[:8], model_name)
 
         if not devices_with_model:
             raise InferenceError(
-                f"Model '{model_name}' not found on any device. Push it first:\n"
+                f"Model '{model_name}' not found on any device.\n"
+                f"Checked:\n"
+                f"  {remote_model_new}\n"
+                f"  {remote_model_legacy}\n"
+                f"Push it via the Models tab or run:\n"
                 f"  cellswarm distribute {model_path}"
             )
 
         self.console.print(
             f"  {len(devices_with_model)}/{len(ready)} devices have {model_name}\n"
         )
+        # Store for later
+        self._model_paths = model_paths
 
-        # 3. Set up ring topology tunnels
-        self.console.print("[bold]3/5[/] Setting up ring topology...")
+        # 3. Set up ring topology
+        # Auto-detect: if all devices are ethernet (IP:port), use direct IP transport
+        self._use_ethernet = all(_is_ethernet(d) for d in devices_with_model)
+        if self._use_ethernet:
+            self.console.print("[bold]3/5[/] Setting up ethernet ring (direct IP)...")
+            self.ring_transport = EthernetRingTransport()
+        else:
+            self.console.print("[bold]3/5[/] Setting up ring topology (tunnels)...")
+            self.ring_transport = SwarmRingTransport()
         topology = await self.ring_transport.setup_ring(devices_with_model)
         layer_window = topology.layer_assignment(total_layers)
 
@@ -117,15 +167,17 @@ class SwarmOrchestrator:
         self.console.print(f"  Layer assignment: {layer_window}")
         self.console.print()
 
-        # 4. Start cellswarm-worker on all phones
-        self.console.print("[bold]4/5[/] Starting cellswarm-workers...")
+        # 4. Start workers on all phones (using per-device binary + model paths)
+        self.console.print("[bold]4/5[/] Starting workers...")
         results = await self.swarm_manager.start_all(
             devices=devices_with_model,
             topology=topology,
-            model_path=remote_model,
+            model_path=remote_model_new,  # default, overridden per-device below
             layer_window=layer_window,
             context_size=context_size,
             prefetch=prefetch,
+            worker_paths=self._worker_paths,
+            model_paths=self._model_paths,
         )
 
         ok_count = sum(1 for v in results.values() if v)
@@ -165,21 +217,21 @@ class SwarmOrchestrator:
         prefetch: bool = True,
     ) -> None:
         """Start cellswarm-host (rank 0) on this Linux server."""
-        swarm_host_bin = shutil.which("cellswarm-host")
+        swarm_host_bin = shutil.which("cellswarm-host") or shutil.which("prima-host")
         if not swarm_host_bin:
-            # Check in project bin dir
-            project_bin = os.path.join(
-                os.path.dirname(os.path.dirname(os.path.dirname(
-                    os.path.dirname(os.path.abspath(__file__))
-                ))),
-                "bin", "cellswarm-host",
-            )
-            if os.path.isfile(project_bin) and os.access(project_bin, os.X_OK):
-                swarm_host_bin = project_bin
-            else:
+            # Check in project bin dir (try both new and legacy names)
+            project_root = os.path.dirname(os.path.dirname(os.path.dirname(
+                os.path.dirname(os.path.abspath(__file__))
+            )))
+            for name in ("cellswarm-host", "prima-host", "prima-host-spec"):
+                candidate = os.path.join(project_root, "bin", name)
+                if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+                    swarm_host_bin = candidate
+                    break
+            if not swarm_host_bin:
                 raise InferenceError(
-                    f"cellswarm-host binary not found. Build it first:\n"
-                    f"  ./scripts/build_cellswarm.sh"
+                    "Host binary not found. Looking for cellswarm-host or prima-host.\n"
+                    "Build with: ./scripts/build_prima.sh"
                 )
 
         if self._host_process and self._host_process.returncode is None:
@@ -193,16 +245,29 @@ class SwarmOrchestrator:
         topology = self.ring_transport.topology
         if topology and len(topology.nodes) > 1:
             next_node = topology.nodes[1]
-            next_ip = "127.0.0.1"
+            # For ethernet: use direct phone IP; for USB: use localhost (tunneled)
+            if hasattr(next_node, 'ip') and next_node.ip:
+                next_ip = next_node.ip
+            else:
+                next_ip = "127.0.0.1"
         else:
             raise InferenceError("Ring topology not established")
+
+        # Direct/ethernet: host binds 0.0.0.0 and advertises its real IP
+        # SSH mode: host binds on 127.0.0.1 (tunnels handle routing)
+        host_node = topology.nodes[0]
+        if (self._use_ethernet or getattr(topology, 'mode', '') == 'direct') \
+                and hasattr(host_node, 'ip') and host_node.ip and host_node.ip != "127.0.0.1":
+            master_ip = host_node.ip
+        else:
+            master_ip = "127.0.0.1"
 
         args = [
             swarm_host_bin,
             "-m", model_path,
             "--world", str(topology_size),
             "--rank", "0",
-            "--master", "127.0.0.1",
+            "--master", master_ip,
             "--next", next_ip,
             "--data-port", str(SWARM_DATA_PORT),
             "--signal-port", str(SWARM_SIGNAL_PORT),

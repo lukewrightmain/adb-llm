@@ -10,6 +10,7 @@ from cellswarm.core.config import SWARM_START_TIMEOUT, REMOTE_SWARM_WORKER
 from cellswarm.core.device import DeviceInfo
 from cellswarm.core.errors import RpcServerError
 from cellswarm.transport.swarm_ring import RingNode, RingTopology
+from cellswarm.transport.ethernet_ring import EthernetRingNode, EthernetRingTopology
 from cellswarm.transport.usb_tether import TetherNode, TetherTopology
 from cellswarm.utils.adb import adb_shell
 
@@ -20,8 +21,8 @@ class SwarmManager:
     async def start(
         self,
         device: DeviceInfo,
-        node: RingNode,
-        topology: RingTopology,
+        node: RingNode | EthernetRingNode,
+        topology: RingTopology | EthernetRingTopology,
         model_path: str,
         layer_window: list[int],
         context_size: int = 2048,
@@ -47,11 +48,18 @@ class SwarmManager:
         # Kill any existing instance
         await self.stop(device)
 
-        # Build cellswarm-worker command
-        # next node address: phone connects to localhost:phone_next_data_port
-        # (routed through adb reverse + SSH reverse to successor)
-        next_addr = f"127.0.0.1"
-        master_addr = f"127.0.0.1"
+        # Build worker command
+        # RingNode has phone_next_ip/phone_master_ip (direct=real IP, ssh=127.0.0.1)
+        # EthernetRingNode has next_ip/master_ip
+        if hasattr(node, 'phone_next_ip') and node.phone_next_ip:
+            next_addr = node.phone_next_ip
+            master_addr = node.phone_master_ip
+        elif hasattr(node, 'next_ip') and node.next_ip:
+            next_addr = node.next_ip
+            master_addr = node.master_ip
+        else:
+            next_addr = "127.0.0.1"
+            master_addr = "127.0.0.1"
 
         lw_str = ",".join(str(n) for n in layer_window)
 
@@ -80,7 +88,7 @@ class SwarmManager:
         if act_quant == "fp16":
             parts.append("--act-quant fp16")
 
-        parts.append("> /data/local/tmp/cellswarm-worker.log 2>&1 &")
+        parts.append("> /data/local/tmp/swarm-worker.log 2>&1 &")
 
         cmd = " ".join(parts)
         logger.debug("Starting cellswarm-worker on {}: {}", device.serial[:8], cmd)
@@ -98,7 +106,7 @@ class SwarmManager:
 
         # Grab logs for debugging
         log_output = await adb_shell(
-            device.serial, "cat /data/local/tmp/cellswarm-worker.log", check=False,
+            device.serial, "cat /data/local/tmp/swarm-worker.log", check=False,
         )
         raise RpcServerError(
             device.serial,
@@ -151,7 +159,7 @@ class SwarmManager:
         if act_quant == "fp16":
             parts.append("--act-quant fp16")
 
-        parts.append("> /data/local/tmp/cellswarm-worker.log 2>&1 &")
+        parts.append("> /data/local/tmp/swarm-worker.log 2>&1 &")
 
         cmd = " ".join(parts)
         logger.debug("Starting tethered cellswarm-worker on {}: {}", device.serial[:8], cmd)
@@ -167,7 +175,7 @@ class SwarmManager:
             await asyncio.sleep(1)
 
         log_output = await adb_shell(
-            device.serial, "cat /data/local/tmp/cellswarm-worker.log", check=False,
+            device.serial, "cat /data/local/tmp/swarm-worker.log", check=False,
         )
         raise RpcServerError(
             device.serial,
@@ -176,44 +184,54 @@ class SwarmManager:
         )
 
     async def stop(self, device: DeviceInfo) -> None:
-        """Kill cellswarm-worker on a device."""
-        await adb_shell(device.serial, "pkill -f cellswarm-worker", check=False)
+        """Kill worker on a device (handles both new and legacy binary names)."""
+        await adb_shell(device.serial, "pkill -f cellswarm-worker; pkill -f prima-worker", check=False)
         await asyncio.sleep(0.5)
-        logger.debug("cellswarm-worker stopped on {}", device.serial[:8])
+        logger.debug("worker stopped on {}", device.serial[:8])
 
     async def is_running(self, device: DeviceInfo) -> bool:
-        """Check if cellswarm-worker is running on a device."""
-        out = await adb_shell(device.serial, "pidof cellswarm-worker", check=False)
+        """Check if worker is running on a device (handles both binary names)."""
+        out = await adb_shell(device.serial, "pidof cellswarm-worker || pidof prima-worker", check=False)
         return bool(out.strip())
 
     async def start_all(
         self,
         devices: list[DeviceInfo],
-        topology: RingTopology,
+        topology: RingTopology | EthernetRingTopology,
         model_path: str,
         layer_window: list[int],
         context_size: int = 2048,
         prefetch: bool = True,
         act_quant: str = "fp32",
+        worker_paths: dict[str, str] | None = None,
+        model_paths: dict[str, str] | None = None,
     ) -> dict[str, bool]:
-        """Start cellswarm-worker on all phones. Returns {serial: success}."""
+        """Start worker on all phones. Returns {serial: success}.
+
+        Args:
+            worker_paths: Optional per-device worker binary paths (serial -> path).
+            model_paths: Optional per-device model paths (serial -> path).
+        """
 
         async def _start_one(dev: DeviceInfo, rank: int) -> tuple[str, bool]:
             node = topology.get_node(rank)
+            dev_worker = (worker_paths or {}).get(dev.serial)
+            dev_model = (model_paths or {}).get(dev.serial, model_path)
             try:
                 await self.start(
                     device=dev,
                     node=node,
                     topology=topology,
-                    model_path=model_path,
+                    model_path=dev_model,
                     layer_window=layer_window,
                     context_size=context_size,
                     prefetch=prefetch,
+                    swarm_bin=dev_worker,
                     act_quant=act_quant,
                 )
                 return dev.serial, True
             except Exception as e:
-                logger.error("Failed to start cellswarm-worker on {}: {}", dev.serial[:8], e)
+                logger.error("Failed to start worker on {}: {}", dev.serial[:8], e)
                 return dev.serial, False
 
         # Start phones sequentially (rank order matters for ZMQ binding)
@@ -267,7 +285,7 @@ class SwarmManager:
         """Get recent cellswarm-worker logs from a device."""
         out = await adb_shell(
             device.serial,
-            f"tail -n {lines} /data/local/tmp/cellswarm-worker.log",
+            f"tail -n {lines} /data/local/tmp/swarm-worker.log",
             check=False,
         )
         return out

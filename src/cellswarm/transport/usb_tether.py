@@ -172,21 +172,33 @@ class UsbTetherTransport:
     async def _verify_connectivity(
         self, devices: list[DeviceInfo], topology: TetherTopology,
     ) -> None:
-        """Ping each phone from WinPC to verify tethering works."""
+        """Ping each phone to verify tethering works.
+
+        Direct mode: ping locally.  SSH mode: ping from WinPC.
+        """
+        from cellswarm.utils.adb import _is_direct, _local_run
+
         for node in topology.nodes:
             try:
-                # Ping from WinPC (which has the USB network interfaces)
-                stdout, _, rc = await _ssh_run(
-                    f'ping -n 1 -w 2000 {node.tether_ip}',
-                    timeout=10,
-                    check=False,
-                )
+                if _is_direct():
+                    # Local ping (Linux)
+                    stdout, _, rc = await _local_run(
+                        ["ping", "-c", "1", "-W", "2", node.tether_ip],
+                        timeout=10,
+                        check=False,
+                    )
+                else:
+                    # Ping from WinPC (Windows)
+                    stdout, _, rc = await _ssh_run(
+                        f'ping -n 1 -w 2000 {node.tether_ip}',
+                        timeout=10,
+                        check=False,
+                    )
                 if rc == 0:
                     logger.info("  {} ({}): ping OK", node.serial[:8], node.tether_ip)
                 else:
                     logger.warning(
-                        "  {} ({}): ping FAILED (rc={}). "
-                        "WinPC may need to configure the USB Ethernet adapter.",
+                        "  {} ({}): ping FAILED (rc={}).",
                         node.serial[:8], node.tether_ip, rc,
                     )
             except Exception as e:

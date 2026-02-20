@@ -239,3 +239,117 @@ def setup(skip_binary: bool) -> None:
     console.print(f"Setting up {len(online)} device(s)...")
     _run(_setup_all())
     console.print("[green]Setup complete.[/]")
+
+
+@devices.command("add")
+@click.argument("address")
+@click.option("--label", default="", help="Friendly label for the device")
+def add_device(address: str, label: str) -> None:
+    """Add a device to the config and connect via adb.
+
+    ADDRESS is IP or IP:PORT (default port: 5555).
+    """
+    from cellswarm.core.config import (
+        DeviceEntry,
+        load_config,
+        save_config,
+        reset_config,
+    )
+
+    # Parse address
+    if ":" in address:
+        ip, port_str = address.rsplit(":", 1)
+        try:
+            port = int(port_str)
+        except ValueError:
+            port = 5555
+    else:
+        ip = address
+        port = 5555
+
+    serial = f"{ip}:{port}"
+
+    cfg = load_config()
+
+    # Check for duplicate
+    for d in cfg.devices:
+        if d.ip == ip and d.port == port:
+            console.print(f"[yellow]Device {serial} already in config.[/]")
+            return
+
+    # Try adb connect (direct mode only)
+    if cfg.mode == "direct":
+        async def _connect():
+            from cellswarm.utils.adb import _local_run
+            try:
+                stdout, _, _ = await _local_run(
+                    [cfg.adb_bin, "connect", serial],
+                    timeout=10, check=False,
+                )
+                return stdout
+            except Exception as e:
+                return str(e)
+
+        result = _run(_connect())
+        if "connected" in result.lower():
+            console.print(f"[green]Connected to {serial}[/]")
+        else:
+            console.print(f"[yellow]adb connect {serial}: {result}[/]")
+
+    cfg.devices.append(DeviceEntry(ip=ip, port=port, label=label))
+    save_config(cfg)
+    reset_config()
+    console.print(f"[green]Added {serial} to config.[/]")
+
+
+@devices.command("remove")
+@click.argument("address")
+def remove_device(address: str) -> None:
+    """Remove a device from the config and disconnect.
+
+    ADDRESS is IP or IP:PORT.
+    """
+    from cellswarm.core.config import load_config, save_config, reset_config
+
+    if ":" in address:
+        ip, port_str = address.rsplit(":", 1)
+        try:
+            port = int(port_str)
+        except ValueError:
+            port = 5555
+    else:
+        ip = address
+        port = 5555
+
+    serial = f"{ip}:{port}"
+
+    cfg = load_config()
+
+    found = None
+    for i, d in enumerate(cfg.devices):
+        if d.ip == ip and d.port == port:
+            found = i
+            break
+
+    if found is None:
+        console.print(f"[yellow]Device {serial} not found in config.[/]")
+        return
+
+    # Try adb disconnect (direct mode only)
+    if cfg.mode == "direct":
+        async def _disconnect():
+            from cellswarm.utils.adb import _local_run
+            try:
+                await _local_run(
+                    [cfg.adb_bin, "disconnect", serial],
+                    timeout=10, check=False,
+                )
+            except Exception:
+                pass
+
+        _run(_disconnect())
+
+    cfg.devices.pop(found)
+    save_config(cfg)
+    reset_config()
+    console.print(f"[green]Removed {serial} from config.[/]")

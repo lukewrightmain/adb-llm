@@ -5,6 +5,7 @@ from loguru import logger
 
 from cellswarm.cli.devices import devices
 from cellswarm.cli.distribute import distribute
+from cellswarm.cli.init import init
 from cellswarm.cli.tunnel import tunnel
 from cellswarm.cli.infer import infer
 from cellswarm.cli.swarm import swarm
@@ -39,6 +40,7 @@ def serve(host: str, port: int, reload: bool) -> None:
     )
 
 
+cli.add_command(init)
 cli.add_command(devices)
 cli.add_command(distribute)
 cli.add_command(tunnel)

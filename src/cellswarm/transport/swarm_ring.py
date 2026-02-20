@@ -3,25 +3,20 @@
 cellswarm uses ZMQ PUSH/PULL sockets in a ring:
   Host(rank0) -> Phone1(rank1) -> Phone2(rank2) -> ... -> Host(rank0)
 
-Each phone needs:
-  - Inbound (recv from predecessor): Phone binds PULL on data_port+rank.
-    We reach it via: adb forward + SSH -L tunnel -> localhost on this server.
-  - Outbound (send to successor): Phone connects PUSH to localhost:port,
-    routed via: adb reverse + SSH -R tunnel -> next phone's bind port.
+Supports two modes:
 
-Optimization: For phone-to-phone connections (both source and dest are phones),
-we bypass SSH entirely. Instead of:
-  Phone1 -> adb reverse -> WinPC -> SSH-R -> Host -> SSH-L -> WinPC -> adb forward -> Phone2
-We use:
-  Phone1 -> adb reverse -> WinPC:forward_port -> adb forward -> Phone2
-This eliminates 2 SSH hops (~10ms each) per inter-phone connection.
+**direct** — Phones are IP-reachable.  No tunnels needed.
+  Host connects to PhoneIP:port directly. Phones connect to each
+  other (and to the host) via direct IP.
 
-The host (rank 0) binds its own ZMQ sockets directly on localhost.
+**ssh** (legacy) — Phones behind a Windows PC.
+  Uses adb forward/reverse + SSH tunnels through WinPC.
 """
 
 from __future__ import annotations
 
 import asyncio
+import socket
 from dataclasses import dataclass, field
 
 from loguru import logger
@@ -29,18 +24,15 @@ from loguru import logger
 from cellswarm.core.config import (
     SWARM_DATA_PORT,
     SWARM_FORWARD_BASE,
-    SWARM_REVERSE_BASE,
     SWARM_SIGNAL_PORT,
-    SWARM_SSH_FORWARD_BASE,
     SWARM_SSH_REVERSE_BASE,
+    load_config,
 )
 from cellswarm.core.device import DeviceInfo
 from cellswarm.core.errors import TunnelError
 from cellswarm.utils.adb import (
     adb_forward,
-    adb_forward_remove,
     adb_reverse,
-    adb_reverse_remove,
     ssh_reverse_tunnel,
     ssh_tunnel,
 )
@@ -54,15 +46,22 @@ class RingNode:
     serial: str  # "" for host
     data_bind_port: int        # Port this node binds PULL on (data_port + rank)
     signal_bind_port: int      # Port this node binds PULL on (signal_port + rank)
-    # How to reach this node's bind ports from the host (localhost:X)
+    # How to reach this node's bind ports from the host (localhost:X or IP:X)
     host_reachable_data_port: int
     host_reachable_signal_port: int
-    # WinPC-side ADB forward ports (used for direct phone-to-phone routing)
+    # Direct IP of this node (used in direct mode; "127.0.0.1" for SSH mode)
+    ip: str = "127.0.0.1"
+    # WinPC-side ADB forward ports (SSH mode only)
     winpc_fwd_data_port: int = 0
     winpc_fwd_signal_port: int = 0
-    # What the phone sees as its next node address (localhost:X on phone)
+    # What the phone sees as its next node address (localhost:X on phone in SSH mode,
+    # or next_phone_IP:X in direct mode)
     phone_next_data_port: int = 0    # Port phone connects to for PUSH to successor
     phone_next_signal_port: int = 0
+    # IP the phone connects to for its next node
+    phone_next_ip: str = "127.0.0.1"
+    # IP the phone uses for --master
+    phone_master_ip: str = "127.0.0.1"
 
 
 @dataclass
@@ -70,6 +69,7 @@ class RingTopology:
     """Complete ring topology with tunnel metadata."""
     nodes: list[RingNode] = field(default_factory=list)
     world_size: int = 0
+    mode: str = "direct"  # "direct" or "ssh"
 
     def get_node(self, rank: int) -> RingNode:
         return self.nodes[rank]
@@ -93,16 +93,37 @@ class RingTopology:
         return layers
 
 
+def _get_host_ip() -> str:
+    """Determine the host's IP reachable by phones.
+
+    Uses config.host_ip if set, otherwise auto-detects.
+    """
+    cfg = load_config()
+    if cfg.host_ip:
+        return cfg.host_ip
+    # Auto-detect: create a UDP socket to a known IP (doesn't actually send)
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("10.105.0.1", 80))
+            return s.getsockname()[0]
+    except Exception:
+        return "127.0.0.1"
+
+
+def _device_ip(device: DeviceInfo) -> str:
+    """Extract the IP from a TCP/IP device serial like '10.105.0.12:5555'."""
+    if ":" in device.serial:
+        return device.serial.split(":")[0]
+    return ""
+
+
 class SwarmRingTransport:
     """Manage the full ring of tunnels for cellswarm pipeline parallelism.
 
     The ring flows: Host(0) -> Phone1(1) -> Phone2(2) -> ... -> Host(0)
 
-    Tunnel strategy:
-      Host -> Phone1:  SSH -L tunnel (host must reach Phone1 via WinPC)
-      PhoneN -> Host:  SSH -R tunnel + ADB reverse (PhoneN must reach host via WinPC)
-      Phone -> Phone:  DIRECT via WinPC (ADB reverse -> WinPC port -> ADB forward)
-                       No SSH tunnels needed — saves ~10ms per hop.
+    In **direct mode** (phones IP-reachable), no tunnels are needed.
+    In **ssh mode** (legacy WinPC), full tunnel chains are created.
     """
 
     SIGNAL_OFFSET = 100  # Gap between data and signal port ranges
@@ -113,24 +134,100 @@ class SwarmRingTransport:
         self._ssh_reverse_procs: list[asyncio.subprocess.Process] = []
 
     async def setup_ring(self, devices: list[DeviceInfo]) -> RingTopology:
-        """Build the full ring topology and create all tunnels.
+        """Build the ring topology — dispatches based on config mode."""
+        cfg = load_config()
+        if cfg.mode == "direct":
+            return await self._setup_ring_direct(devices)
+        else:
+            return await self._setup_ring_ssh(devices)
 
-        Args:
-            devices: Phones to include (will become ranks 1..N).
+    # ------------------------------------------------------------------
+    # Direct mode — phones are IP-reachable, no tunnels
+    # ------------------------------------------------------------------
 
-        Returns:
-            RingTopology with tunnel info for each node.
+    async def _setup_ring_direct(self, devices: list[DeviceInfo]) -> RingTopology:
+        """Build a direct-IP ring.  No tunnels needed.
+
+        Phones connect to each other and to the host via real IP addresses.
         """
         world_size = len(devices) + 1  # +1 for host at rank 0
-        topology = RingTopology(world_size=world_size)
+        host_ip = _get_host_ip()
+        topology = RingTopology(world_size=world_size, mode="direct")
+
+        # Host node (rank 0)
+        host_node = RingNode(
+            rank=0,
+            device=None,
+            serial="",
+            ip=host_ip,
+            data_bind_port=SWARM_DATA_PORT,
+            signal_bind_port=SWARM_SIGNAL_PORT,
+            host_reachable_data_port=SWARM_DATA_PORT,
+            host_reachable_signal_port=SWARM_SIGNAL_PORT,
+        )
+        topology.nodes.append(host_node)
+
+        # Phone nodes (ranks 1..N)
+        for idx, device in enumerate(devices):
+            rank = idx + 1
+            phone_ip = _device_ip(device)
+            if not phone_ip:
+                raise TunnelError(
+                    device.serial,
+                    f"Cannot determine IP for device {device.serial}. "
+                    "Direct mode requires TCP/IP devices (IP:PORT serial).",
+                )
+            node = RingNode(
+                rank=rank,
+                device=device,
+                serial=device.serial,
+                ip=phone_ip,
+                data_bind_port=SWARM_DATA_PORT + rank,
+                signal_bind_port=SWARM_SIGNAL_PORT + rank,
+                # Host reaches phone via its IP directly
+                host_reachable_data_port=SWARM_DATA_PORT + rank,
+                host_reachable_signal_port=SWARM_SIGNAL_PORT + rank,
+            )
+            topology.nodes.append(node)
+
+        # Set next/master IPs for each phone
+        for idx, device in enumerate(devices):
+            rank = idx + 1
+            next_rank = (rank + 1) % world_size
+            next_node = topology.nodes[next_rank]
+            topology.nodes[rank].phone_next_ip = next_node.ip
+            topology.nodes[rank].phone_next_data_port = SWARM_DATA_PORT + next_rank
+            topology.nodes[rank].phone_next_signal_port = SWARM_SIGNAL_PORT + next_rank
+            topology.nodes[rank].phone_master_ip = host_ip
+
+        self._topology = topology
+
+        logger.info("Direct-IP ring topology established: {} nodes", world_size)
+        for node in topology.nodes:
+            label = "HOST" if node.rank == 0 else node.serial[:12]
+            logger.info(
+                "  rank {} ({}): ip={}, data_bind={}",
+                node.rank, label, node.ip, node.data_bind_port,
+            )
+
+        return topology
+
+    # ------------------------------------------------------------------
+    # SSH mode — legacy WinPC tunnel chains
+    # ------------------------------------------------------------------
+
+    async def _setup_ring_ssh(self, devices: list[DeviceInfo]) -> RingTopology:
+        """Build SSH-tunneled ring (legacy WinPC mode)."""
+        world_size = len(devices) + 1
+        topology = RingTopology(world_size=world_size, mode="ssh")
 
         # Host node (rank 0) — binds directly on localhost
         host_node = RingNode(
             rank=0,
             device=None,
             serial="",
-            data_bind_port=SWARM_DATA_PORT,          # 9000
-            signal_bind_port=SWARM_SIGNAL_PORT,       # 10000
+            data_bind_port=SWARM_DATA_PORT,
+            signal_bind_port=SWARM_SIGNAL_PORT,
             host_reachable_data_port=SWARM_DATA_PORT,
             host_reachable_signal_port=SWARM_SIGNAL_PORT,
         )
@@ -145,7 +242,6 @@ class SwarmRingTransport:
                 serial=device.serial,
                 data_bind_port=SWARM_DATA_PORT + rank,
                 signal_bind_port=SWARM_SIGNAL_PORT + rank,
-                # SSH -L local port must match cellswarm's expected port (data_port + rank)
                 host_reachable_data_port=SWARM_DATA_PORT + rank,
                 host_reachable_signal_port=SWARM_SIGNAL_PORT + rank,
                 winpc_fwd_data_port=SWARM_FORWARD_BASE + idx,
@@ -168,25 +264,21 @@ class SwarmRingTransport:
             next_rank = (rank + 1) % world_size
             next_node = topology.nodes[next_rank]
 
-            # Phone connects PUSH to localhost:(DATA_PORT + next_rank)
             phone_next_data = SWARM_DATA_PORT + next_rank
             phone_next_signal = SWARM_SIGNAL_PORT + next_rank
             topology.nodes[rank].phone_next_data_port = phone_next_data
             topology.nodes[rank].phone_next_signal_port = phone_next_signal
 
-            # Determine if this is a phone-to-phone or phone-to-host connection
-            is_next_phone = next_node.serial != ""  # next is a phone, not host
+            is_next_phone = next_node.serial != ""
 
             try:
                 if is_next_phone:
-                    # DIRECT: Phone -> WinPC -> Phone (no SSH)
                     await self._create_direct_outbound(
                         device, idx,
                         phone_next_data, next_node.winpc_fwd_data_port,
                         phone_next_signal, next_node.winpc_fwd_signal_port,
                     )
                 else:
-                    # Phone -> Host: needs SSH -R tunnel
                     await self._create_outbound_tunnels(
                         device, idx,
                         phone_next_data, next_node.host_reachable_data_port,
@@ -197,7 +289,7 @@ class SwarmRingTransport:
 
         self._topology = topology
 
-        logger.info("Ring topology established: {} nodes", world_size)
+        logger.info("SSH ring topology established: {} nodes", world_size)
         for node in topology.nodes:
             label = "HOST" if node.rank == 0 else node.serial[:8]
             logger.info(
@@ -207,18 +299,20 @@ class SwarmRingTransport:
 
         return topology
 
+    # ------------------------------------------------------------------
+    # SSH mode tunnel helpers
+    # ------------------------------------------------------------------
+
     async def _create_inbound_tunnels(
         self, device: DeviceInfo, idx: int, node: RingNode,
     ) -> None:
         """Create tunnels so that host can reach phone's ZMQ bind ports."""
-        # Data port
         win_fwd_port = SWARM_FORWARD_BASE + idx
         await adb_forward(device.serial, win_fwd_port, node.data_bind_port)
         proc = await ssh_tunnel(node.host_reachable_data_port, win_fwd_port)
         if proc:
             self._ssh_forward_procs.append(proc)
 
-        # Signal port
         win_fwd_sig = SWARM_FORWARD_BASE + self.SIGNAL_OFFSET + idx
         await adb_forward(device.serial, win_fwd_sig, node.signal_bind_port)
         proc = await ssh_tunnel(node.host_reachable_signal_port, win_fwd_sig)
@@ -240,18 +334,8 @@ class SwarmRingTransport:
         phone_signal_port: int,
         winpc_fwd_signal_port: int,
     ) -> None:
-        """Create DIRECT phone-to-phone tunnels via WinPC (no SSH).
-
-        Chain: phone:localhost:phone_port -> adb reverse -> winpc:fwd_port
-               -> adb forward (already set up) -> next_phone:bind_port
-
-        This bypasses SSH entirely for inter-phone connections, saving ~20ms
-        per hop (2 SSH traversals eliminated).
-        """
-        # Data outbound — point ADB reverse directly at next phone's ADB forward port
+        """Create DIRECT phone-to-phone tunnels via WinPC (no SSH)."""
         await adb_reverse(device.serial, phone_data_port, winpc_fwd_data_port)
-
-        # Signal outbound — same direct routing
         await adb_reverse(device.serial, phone_signal_port, winpc_fwd_signal_port)
 
         logger.info(
@@ -269,23 +353,17 @@ class SwarmRingTransport:
         phone_signal_port: int,
         target_signal_port: int,
     ) -> None:
-        """Create tunnels so phone can reach the host's bind port.
-
-        Chain: phone:localhost:phone_port -> adb reverse -> winpc:ssh_rev_port
-               -> SSH -R -> this server:target_port (host's bind port)
-
-        Only used for PhoneN -> Host (rank 0) connection.
-        """
-        # Data outbound
+        """Create tunnels so phone can reach the host's bind port (SSH mode)."""
         win_rev_data = SWARM_SSH_REVERSE_BASE + idx
         proc = await ssh_reverse_tunnel(target_data_port, win_rev_data)
-        self._ssh_reverse_procs.append(proc)
+        if proc:
+            self._ssh_reverse_procs.append(proc)
         await adb_reverse(device.serial, phone_data_port, win_rev_data)
 
-        # Signal outbound
         win_rev_sig = SWARM_SSH_REVERSE_BASE + self.SIGNAL_OFFSET + idx
         proc = await ssh_reverse_tunnel(target_signal_port, win_rev_sig)
-        self._ssh_reverse_procs.append(proc)
+        if proc:
+            self._ssh_reverse_procs.append(proc)
         await adb_reverse(device.serial, phone_signal_port, win_rev_sig)
 
         logger.debug(
@@ -294,9 +372,13 @@ class SwarmRingTransport:
             phone_data_port, target_data_port,
         )
 
+    # ------------------------------------------------------------------
+    # Teardown
+    # ------------------------------------------------------------------
+
     async def teardown_ring(self) -> None:
         """Remove all tunnels and clean up."""
-        # Kill all SSH tunnel processes
+        # Kill SSH tunnel processes (SSH mode)
         for proc in self._ssh_forward_procs + self._ssh_reverse_procs:
             if proc.returncode is None:
                 proc.terminate()
@@ -307,10 +389,10 @@ class SwarmRingTransport:
         self._ssh_forward_procs.clear()
         self._ssh_reverse_procs.clear()
 
-        # Remove adb forwards and reverses for all phones
-        if self._topology:
+        # Remove adb forwards and reverses for all phones (SSH mode)
+        if self._topology and self._topology.mode == "ssh":
             for node in self._topology.nodes:
-                if node.serial:  # skip host
+                if node.serial:
                     from cellswarm.utils.adb import (
                         adb_forward_remove_all,
                         adb_reverse_remove_all,

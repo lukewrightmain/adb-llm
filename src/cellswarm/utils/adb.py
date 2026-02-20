@@ -1,8 +1,14 @@
-"""Low-level async ADB wrapper that runs commands via SSH on a remote host.
+"""Low-level async ADB wrapper — dual-mode (direct or SSH).
 
-ADB devices are physically connected to a Windows PC. This module SSHes
-into that machine to run ADB commands, and also handles file transfers
-(SCP to Windows, then adb push from Windows to phone).
+Supports two connection modes controlled by ``~/.cellswarm/config.yaml``:
+
+**direct** — ADB binary runs locally, phones reachable via TCP/IP
+  (e.g. ``adb connect 10.105.0.12:5555``).  No SSH, no Windows PC.
+
+**ssh** (legacy) — ADB runs on a remote Windows PC via SSH.
+  All commands go through ``ssh winpc ...``, file transfers use SCP→WinPC→ADB push.
+
+The active mode is determined by ``load_config().mode``.
 """
 
 from __future__ import annotations
@@ -14,14 +20,33 @@ from dataclasses import dataclass
 
 from loguru import logger
 
+from cellswarm.core.config import load_config
 from cellswarm.core.errors import AdbError
 
-# Remote host running ADB (Windows PC with phones connected via USB)
-# Can be overridden via CELLSWARM_SSH_HOST env var
+
+def _cfg_ssh_host() -> str:
+    return load_config().ssh_host
+
+
+def _cfg_remote_adb_bin() -> str:
+    return load_config().remote_adb_bin
+
+
+def _cfg_staging_dir() -> str:
+    return load_config().staging_dir
+
+
+def _cfg_adb_bin() -> str:
+    return load_config().adb_bin
+
+
+def _is_direct() -> bool:
+    return load_config().mode == "direct"
+
+
+# Legacy module-level aliases kept for any external callers
 SSH_HOST = os.environ.get("CELLSWARM_SSH_HOST", "winpc")
 ADB_BIN = os.environ.get("CELLSWARM_ADB_BIN", r'"C:\Program Files\platform-tools\adb.exe"')
-
-# Windows temp directory for staging model files before adb push
 WIN_STAGING_DIR = os.environ.get("CELLSWARM_WIN_STAGING", r"C:\Users\Lukio-4090\cellswarm-staging")
 
 
@@ -36,15 +61,55 @@ class AdbDevice:
     transport_id: str = ""
 
 
+async def _local_run(
+    cmd: str | list[str],
+    timeout: float = 30,
+    check: bool = True,
+) -> tuple[str, str, int]:
+    """Run a command locally as a subprocess."""
+    if isinstance(cmd, list):
+        display = " ".join(cmd)
+        logger.debug("local -> {}", display)
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+    else:
+        logger.debug("local -> {}", cmd)
+        proc = await asyncio.create_subprocess_shell(
+            cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+    try:
+        stdout_bytes, stderr_bytes = await asyncio.wait_for(
+            proc.communicate(), timeout=timeout
+        )
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.wait()
+        raise AdbError(str(cmd), -1, "Local command timed out")
+
+    stdout = stdout_bytes.decode(errors="replace").strip()
+    stderr = stderr_bytes.decode(errors="replace").strip()
+    rc = proc.returncode or 0
+
+    if check and rc != 0:
+        raise AdbError(str(cmd), rc, stderr or stdout)
+    return stdout, stderr, rc
+
+
 async def _ssh_run(
     cmd: str,
     timeout: float = 30,
     check: bool = True,
 ) -> tuple[str, str, int]:
     """Run a command on the Windows PC via SSH."""
-    logger.debug("ssh {} -> {}", SSH_HOST, cmd)
+    ssh_host = _cfg_ssh_host()
+    logger.debug("ssh {} -> {}", ssh_host, cmd)
     proc = await asyncio.create_subprocess_exec(
-        "ssh", "-o", "ConnectTimeout=10", SSH_HOST, cmd,
+        "ssh", "-o", "ConnectTimeout=10", ssh_host, cmd,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
@@ -71,9 +136,13 @@ async def _adb_run(
     timeout: float = 30,
     check: bool = True,
 ) -> tuple[str, str, int]:
-    """Run an ADB command on the remote Windows PC via SSH."""
-    adb_cmd = f'{ADB_BIN} {" ".join(args)}'
-    return await _ssh_run(adb_cmd, timeout=timeout, check=check)
+    """Run an ADB command — locally (direct) or via SSH (ssh mode)."""
+    if _is_direct():
+        cmd_list = [_cfg_adb_bin()] + list(args)
+        return await _local_run(cmd_list, timeout=timeout, check=check)
+    else:
+        adb_cmd = f'{_cfg_remote_adb_bin()} {" ".join(args)}'
+        return await _ssh_run(adb_cmd, timeout=timeout, check=check)
 
 
 async def adb_devices() -> list[AdbDevice]:
@@ -106,11 +175,19 @@ async def adb_devices() -> list[AdbDevice]:
 
 
 async def adb_shell(serial: str, cmd: str, timeout: float = 30, check: bool = True) -> str:
-    """Run a shell command on a device via the remote ADB host."""
-    stdout, stderr, rc = await _adb_run(
-        "-s", serial, "shell", f'"{cmd}"',
-        timeout=timeout, check=False,
-    )
+    """Run a shell command on a device."""
+    if _is_direct():
+        # Direct mode: run adb locally, pass shell command without extra quoting
+        stdout, stderr, rc = await _local_run(
+            [_cfg_adb_bin(), "-s", serial, "shell", cmd],
+            timeout=timeout, check=False,
+        )
+    else:
+        # SSH mode: wrap command in quotes for the SSH layer
+        stdout, stderr, rc = await _adb_run(
+            "-s", serial, "shell", f'"{cmd}"',
+            timeout=timeout, check=False,
+        )
     if check and rc != 0:
         raise AdbError(f"adb -s {serial} shell {cmd}", rc, stderr)
     return stdout
@@ -124,54 +201,61 @@ async def adb_push(
 ) -> tuple[float, float]:
     """Push a file to a device.
 
-    Flow: SCP file from this server -> Windows PC staging dir,
-    then adb push from Windows -> phone.
+    **Direct mode**: ``adb push`` runs locally (1-hop).
+    **SSH mode**: SCP to Windows PC staging dir, then ``adb push`` on Windows.
 
     Returns (elapsed_seconds, bytes_per_second).
     """
     file_size = os.path.getsize(local_path)
-    filename = os.path.basename(local_path)
-    win_staged = f"{WIN_STAGING_DIR}\\{filename}"
-
-    # Ensure staging dir exists on Windows
-    await _ssh_run(f'mkdir "{WIN_STAGING_DIR}" 2>nul & echo ok', check=False)
-
     t0 = time.monotonic()
 
-    # Step 1: SCP file to Windows PC
-    logger.info("SCP {} -> {}:{}", local_path, SSH_HOST, win_staged)
-    scp_proc = await asyncio.create_subprocess_exec(
-        "scp", "-o", "ConnectTimeout=10",
-        local_path, f"{SSH_HOST}:{win_staged}",
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    try:
-        scp_out, scp_err = await asyncio.wait_for(scp_proc.communicate(), timeout=timeout)
-    except asyncio.TimeoutError:
-        scp_proc.kill()
-        await scp_proc.wait()
-        raise AdbError(f"scp {local_path}", -1, "SCP timed out")
+    if _is_direct():
+        # Direct mode — simple local adb push
+        logger.info("ADB push {} -> {}:{}", local_path, serial, remote_path)
+        await _local_run(
+            [_cfg_adb_bin(), "-s", serial, "push", local_path, remote_path],
+            timeout=timeout,
+        )
+    else:
+        # SSH mode — SCP to Windows, then adb push from Windows
+        filename = os.path.basename(local_path)
+        staging = _cfg_staging_dir()
+        ssh_host = _cfg_ssh_host()
+        win_staged = f"{staging}\\{filename}"
 
-    if scp_proc.returncode != 0:
-        raise AdbError(
-            f"scp to {SSH_HOST}",
-            scp_proc.returncode or 1,
-            scp_err.decode(errors="replace"),
+        await _ssh_run(f'mkdir "{staging}" 2>nul & echo ok', check=False)
+
+        logger.info("SCP {} -> {}:{}", local_path, ssh_host, win_staged)
+        scp_proc = await asyncio.create_subprocess_exec(
+            "scp", "-o", "ConnectTimeout=10",
+            local_path, f"{ssh_host}:{win_staged}",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            scp_out, scp_err = await asyncio.wait_for(scp_proc.communicate(), timeout=timeout)
+        except asyncio.TimeoutError:
+            scp_proc.kill()
+            await scp_proc.wait()
+            raise AdbError(f"scp {local_path}", -1, "SCP timed out")
+
+        if scp_proc.returncode != 0:
+            raise AdbError(
+                f"scp to {ssh_host}",
+                scp_proc.returncode or 1,
+                scp_err.decode(errors="replace"),
+            )
+
+        logger.info("ADB push {} -> {}:{}", win_staged, serial, remote_path)
+        await _adb_run(
+            "-s", serial, "push", f'"{win_staged}"', remote_path,
+            timeout=timeout,
         )
 
-    # Step 2: ADB push from Windows to phone
-    logger.info("ADB push {} -> {}:{}", win_staged, serial, remote_path)
-    await _adb_run(
-        "-s", serial, "push", f'"{win_staged}"', remote_path,
-        timeout=timeout,
-    )
+        await _ssh_run(f'del "{win_staged}" 2>nul', check=False)
 
     elapsed = time.monotonic() - t0
     speed = file_size / elapsed if elapsed > 0 else 0
-
-    # Clean up staged file on Windows
-    await _ssh_run(f'del "{win_staged}" 2>nul', check=False)
 
     logger.info(
         "Pushed {} to {} in {:.1f}s ({:.1f} MB/s)",
@@ -186,28 +270,37 @@ async def adb_push_local_to_device(
     remote_path: str,
     timeout: float = 600,
 ) -> tuple[float, float]:
-    """Push a file already on the Windows PC to a device.
+    """Push a file already on the ADB host to a device.
 
-    Use this when the model file is already on the Windows machine
-    (skips the SCP step).
+    In direct mode this is the same as adb_push (file is local).
+    In SSH mode, skips the SCP step since the file is already on Windows.
     """
     t0 = time.monotonic()
-    await _adb_run(
-        "-s", serial, "push", f'"{win_local_path}"', remote_path,
-        timeout=timeout,
-    )
+
+    if _is_direct():
+        await _local_run(
+            [_cfg_adb_bin(), "-s", serial, "push", win_local_path, remote_path],
+            timeout=timeout,
+        )
+        try:
+            file_size = os.path.getsize(win_local_path)
+        except OSError:
+            file_size = 0
+    else:
+        await _adb_run(
+            "-s", serial, "push", f'"{win_local_path}"', remote_path,
+            timeout=timeout,
+        )
+        stdout, _, _ = await _ssh_run(
+            f'powershell -Command "(Get-Item \'{win_local_path}\').Length"',
+            check=False,
+        )
+        try:
+            file_size = int(stdout.strip())
+        except ValueError:
+            file_size = 0
+
     elapsed = time.monotonic() - t0
-
-    # Get file size from Windows
-    stdout, _, _ = await _ssh_run(
-        f'powershell -Command "(Get-Item \'{win_local_path}\').Length"',
-        check=False,
-    )
-    try:
-        file_size = int(stdout.strip())
-    except ValueError:
-        file_size = 0
-
     speed = file_size / elapsed if elapsed > 0 and file_size > 0 else 0
     logger.info(
         "Pushed {} to {} in {:.1f}s ({:.1f} MB/s)",
@@ -222,30 +315,36 @@ async def adb_pull(
     local_path: str,
     timeout: float = 600,
 ) -> None:
-    """Pull a file from a device (to the Windows PC, then SCP here)."""
-    filename = os.path.basename(remote_path)
-    win_staged = f"{WIN_STAGING_DIR}\\{filename}"
+    """Pull a file from a device."""
+    if _is_direct():
+        await _local_run(
+            [_cfg_adb_bin(), "-s", serial, "pull", remote_path, local_path],
+            timeout=timeout,
+        )
+    else:
+        filename = os.path.basename(remote_path)
+        staging = _cfg_staging_dir()
+        ssh_host = _cfg_ssh_host()
+        win_staged = f"{staging}\\{filename}"
 
-    await _ssh_run(f'mkdir "{WIN_STAGING_DIR}" 2>nul & echo ok', check=False)
-    await _adb_run("-s", serial, "pull", remote_path, f'"{win_staged}"', timeout=timeout)
+        await _ssh_run(f'mkdir "{staging}" 2>nul & echo ok', check=False)
+        await _adb_run("-s", serial, "pull", remote_path, f'"{win_staged}"', timeout=timeout)
 
-    # SCP from Windows to here
-    scp_proc = await asyncio.create_subprocess_exec(
-        "scp", "-o", "ConnectTimeout=10",
-        f"{SSH_HOST}:{win_staged}", local_path,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    await asyncio.wait_for(scp_proc.communicate(), timeout=timeout)
-    await _ssh_run(f'del "{win_staged}" 2>nul', check=False)
+        scp_proc = await asyncio.create_subprocess_exec(
+            "scp", "-o", "ConnectTimeout=10",
+            f"{ssh_host}:{win_staged}", local_path,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        await asyncio.wait_for(scp_proc.communicate(), timeout=timeout)
+        await _ssh_run(f'del "{win_staged}" 2>nul', check=False)
 
 
 async def adb_forward(serial: str, local_port: int, remote_port: int) -> None:
-    """Create a TCP port forward on the Windows PC.
+    """Create a TCP port forward.
 
-    Note: The forward is on the Windows PC's localhost, not this server.
-    For inference, we also need an SSH tunnel from this server to the
-    Windows PC's forwarded port.
+    Direct mode: forward runs on this machine's localhost.
+    SSH mode: forward runs on the Windows PC's localhost.
     """
     await _adb_run("-s", serial, "forward", f"tcp:{local_port}", f"tcp:{remote_port}")
     logger.info("Forward {}:{} -> {}:{}", serial, local_port, serial, remote_port)
@@ -285,8 +384,12 @@ async def ssh_tunnel(
 ) -> asyncio.subprocess.Process | None:
     """Create an SSH tunnel: this server:local_port -> Windows PC:remote_port.
 
-    Used to make ADB-forwarded ports on Windows accessible from this server.
+    In direct mode this is a no-op (phones are already IP-reachable).
     """
+    if _is_direct():
+        return None
+
+    ssh_host = _cfg_ssh_host()
     args = [
         "ssh",
         "-o", "ConnectTimeout=10",
@@ -296,7 +399,7 @@ async def ssh_tunnel(
         "-o", "ControlPersist=600",
         "-N",  # no remote command
         "-L", f"{local_port}:127.0.0.1:{remote_port}",
-        SSH_HOST,
+        ssh_host,
     ]
     if background:
         proc = await asyncio.create_subprocess_exec(
@@ -309,7 +412,7 @@ async def ssh_tunnel(
         if proc.returncode is not None:
             stderr = (await proc.stderr.read()).decode(errors="replace")
             raise AdbError(f"SSH tunnel :{local_port}->:{remote_port}", proc.returncode, stderr)
-        logger.info("SSH tunnel: localhost:{} -> {}:{}", local_port, SSH_HOST, remote_port)
+        logger.info("SSH tunnel: localhost:{} -> {}:{}", local_port, ssh_host, remote_port)
         return proc
     return None
 
@@ -318,13 +421,13 @@ async def ssh_tunnel(
 
 
 async def adb_reverse(serial: str, remote_port: int, local_port: int) -> None:
-    """Create an ADB reverse tunnel on the Windows PC.
+    """Create an ADB reverse tunnel.
 
-    Makes the phone's localhost:remote_port route to Windows PC's localhost:local_port.
-    Combined with an SSH reverse tunnel, this lets the phone reach this server.
+    Makes the phone's localhost:remote_port route to the ADB host's localhost:local_port.
     """
     await _adb_run("-s", serial, "reverse", f"tcp:{remote_port}", f"tcp:{local_port}")
-    logger.info("Reverse {}:phone:{} -> winpc:{}", serial, remote_port, local_port)
+    where = "local" if _is_direct() else "winpc"
+    logger.info("Reverse {}:phone:{} -> {}:{}", serial, remote_port, where, local_port)
 
 
 async def adb_reverse_remove(serial: str, remote_port: int) -> None:
@@ -360,12 +463,15 @@ async def adb_reverse_list(serial: str | None = None) -> list[tuple[str, int, in
 async def ssh_reverse_tunnel(
     local_port: int,
     remote_port: int,
-) -> asyncio.subprocess.Process:
+) -> asyncio.subprocess.Process | None:
     """Create an SSH reverse tunnel: Windows PC:remote_port -> this server:local_port.
 
-    Used to make this server's ports accessible from the Windows PC side,
-    so that adb reverse tunnels can route phone traffic back here.
+    In direct mode this is a no-op (phones connect to host IP directly).
     """
+    if _is_direct():
+        return None
+
+    ssh_host = _cfg_ssh_host()
     args = [
         "ssh",
         "-o", "ConnectTimeout=10",
@@ -375,7 +481,7 @@ async def ssh_reverse_tunnel(
         "-o", "ControlPersist=600",
         "-N",
         "-R", f"{remote_port}:127.0.0.1:{local_port}",
-        SSH_HOST,
+        ssh_host,
     ]
     proc = await asyncio.create_subprocess_exec(
         *args,
@@ -386,13 +492,13 @@ async def ssh_reverse_tunnel(
     if proc.returncode is not None:
         stderr = (await proc.stderr.read()).decode(errors="replace")
         raise AdbError(
-            f"SSH reverse tunnel winpc:{remote_port}->localhost:{local_port}",
+            f"SSH reverse tunnel {ssh_host}:{remote_port}->localhost:{local_port}",
             proc.returncode,
             stderr,
         )
     logger.info(
         "SSH reverse tunnel: {}:{} -> localhost:{}",
-        SSH_HOST, remote_port, local_port,
+        ssh_host, remote_port, local_port,
     )
     return proc
 
