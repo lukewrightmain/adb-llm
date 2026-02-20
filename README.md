@@ -2,7 +2,7 @@
 
 Run large language models (33B parameters) across a ring of Android phones using [cellswarm](https://github.com/nicojbae/cellswarm) pipeline-ring parallelism with speculative decoding.
 
-**Peak result: 5.8 tok/s** on DeepSeek Coder 33B using 12 Samsung Galaxy Z Fold3 phones over Ethernet with interleaved speculative decoding + pipeline parallelism.
+**Peak result: 6.1 tok/s** on DeepSeek Coder 33B using 12 Samsung Galaxy Z Fold3 phones over Ethernet with interleaved speculative decoding + pipeline parallelism.
 
 > This is the **production** branch — the best-performing, tested configuration. See [Benchmarks](#benchmarks) for full results and [Device Onboarding](#device-onboarding) to add phones to the cluster.
 
