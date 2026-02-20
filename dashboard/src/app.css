@@ -1,0 +1,95 @@
+@import 'tailwindcss';
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme inline {
+	--color-background: #0d1117;
+	--color-surface: #161b22;
+	--color-surface-hover: #1c2333;
+	--color-border: #30363d;
+	--color-foreground: #e6edf3;
+	--color-muted: #8b949e;
+	--color-primary: #60a5fa;
+	--color-primary-dim: #3b82f6;
+	--color-success: #3fb950;
+	--color-warning: #d29922;
+	--color-error: #f85149;
+	--color-card: #0d1117;
+
+	--font-mono: 'JetBrains Mono', 'SF Mono', 'Fira Code', monospace;
+}
+
+/* Base dark theme */
+body {
+	background: var(--color-background);
+	color: var(--color-foreground);
+	font-family: var(--font-mono);
+}
+
+/* Scrollbar */
+::-webkit-scrollbar {
+	width: 6px;
+	height: 6px;
+}
+::-webkit-scrollbar-track {
+	background: var(--color-background);
+}
+::-webkit-scrollbar-thumb {
+	background: var(--color-border);
+	border-radius: 3px;
+}
+
+.scrollbar-hide {
+	-ms-overflow-style: none;
+	scrollbar-width: none;
+}
+.scrollbar-hide::-webkit-scrollbar {
+	display: none;
+}
+
+/* Ring topology */
+@keyframes flowAnimation {
+	to {
+		stroke-dashoffset: -20;
+	}
+}
+
+@keyframes statusPulse {
+	0%, 100% { opacity: 1; }
+	50% { opacity: 0.5; }
+}
+
+@keyframes radarSweep {
+	from { transform: rotate(0deg); }
+	to { transform: rotate(360deg); }
+}
+
+.graph-link {
+	stroke: var(--color-border);
+	stroke-width: 2;
+	fill: none;
+}
+
+.graph-link-active {
+	stroke: var(--color-primary);
+	stroke-width: 2;
+	fill: none;
+	stroke-dasharray: 8 4;
+	animation: flowAnimation 1s linear infinite;
+}
+
+.glow-text {
+	text-shadow: 0 0 10px var(--color-primary), 0 0 20px rgba(96, 165, 250, 0.3);
+}
+
+.status-pulse {
+	animation: statusPulse 2s ease-in-out infinite;
+}
+
+/* Grid background */
+.grid-bg {
+	background-image:
+		linear-gradient(rgba(96, 165, 250, 0.03) 1px, transparent 1px),
+		linear-gradient(90deg, rgba(96, 165, 250, 0.03) 1px, transparent 1px);
+	background-size: 20px 20px;
+}

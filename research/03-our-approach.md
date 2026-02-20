@@ -5,8 +5,8 @@
 | Date | Milestone | Configuration | Result |
 |------|-----------|--------------|--------|
 | Feb 14 | llama.cpp RPC | 3 USB phones + host | 0.75 -> 1.08 tok/s |
-| Feb 15 | prima.cpp ring (non-spec) | 3 USB phones | 1.07 tok/s |
-| Feb 15 | prima.cpp ring (spec) | 3 USB phones | 1.39 tok/s |
+| Feb 15 | cellswarm ring (non-spec) | 3 USB phones | 1.07 tok/s |
+| Feb 15 | cellswarm ring (spec) | 3 USB phones | 1.39 tok/s |
 | Feb 16 | Ethernet direct IP | 4-20 Ethernet phones | Bypasses USB tunnel bug |
 | Feb 17 | Speculative decoding (Ethernet) | 4-10 Ethernet phones | 2.0-3.1 tok/s |
 | **Feb 18** | **Pipeline parallelism** | **10 Ethernet phones** | **3.345 tok/s** |
@@ -18,19 +18,19 @@
 ```
 Coding Server (host)              USB Tunnel              Phones (3x)
 +------------------+     +-------------------+     +------------------+
-| llama-server     |---->| ADB fwd + SSH -L  |---->| rpc-server       |
+| swarm-server     |---->| ADB fwd + SSH -L  |---->| swarm-rpc       |
 | (coordinates     |     | Phone:60000 ->    |     | (tensor compute) |
 |  tensor splits)  |<----| WinPC -> localhost |<----| (per-layer ops)  |
 +------------------+     +-------------------+     +------------------+
 ```
 
-The host llama-server splits tensor operations across 3 rpc-server instances running on phones. Each phone processes its share of every tensor operation for every layer. The host coordinates all operations, sending `graph_compute` commands and receiving results.
+The host swarm-server splits tensor operations across 3 swarm-rpc instances running on phones. Each phone processes its share of every tensor operation for every layer. The host coordinates all operations, sending `graph_compute` commands and receiving results.
 
 ### Optimizations Applied
 
 1. **ARM dotprod + fp16 flags** — Enabled NEON dot product instructions (+15-25%)
 2. **LZ4 compression** — Compressed RPC traffic (~600KB/token/phone -> much less)
-3. **rpc-server hash cache** — Cached model tensors on-phone (reload: 20 min -> 2 min)
+3. **swarm-rpc hash cache** — Cached model tensors on-phone (reload: 20 min -> 2 min)
 4. **graph_recompute cache fix** — Fixed upstream bug: pointer comparison -> topology comparison. Eliminated ~1.8 MB/token serialization overhead. This was the biggest single win.
 5. **Batch init_tensor** — Reduced model loading round-trips by 9x
 
@@ -42,7 +42,7 @@ The host llama-server splits tensor operations across 3 rpc-server instances run
 
 RPC tensor parallelism requires the host to coordinate every tensor operation. Each layer needs a round-trip to all phones. For a 62-layer model with 3 phones, that's ~186 round-trips per token through USB tunnel chains. The communication overhead dominates compute at this latency.
 
-## Phase 2: prima.cpp Ring (Feb 15)
+## Phase 2: cellswarm Ring (Feb 15)
 
 ### Architecture
 
@@ -56,7 +56,7 @@ Phone 0 (rank 0)          Phone 1 (rank 1)         Phone 2 (rank 2)
                               ZMQ ring (TCP)
 ```
 
-Switched from tensor parallelism to pipeline parallelism using prima.cpp. Each phone holds a contiguous slice of transformer layers. Activations flow around the ring — each phone receives, computes its layers, and forwards. One ring traversal = one token's forward pass.
+Switched from tensor parallelism to pipeline parallelism using cellswarm. Each phone holds a contiguous slice of transformer layers. Activations flow around the ring — each phone receives, computes its layers, and forwards. One ring traversal = one token's forward pass.
 
 ### Key Difference from RPC
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Deploy prima-worker binary and/or model to N phones via ADB through WinPC.
+# Deploy cellswarm-worker binary and/or model to N phones via ADB through WinPC.
 #
 # Usage:
 #   ./scripts/deploy_phones.sh               # Deploy binary+model to first 4 phones
@@ -16,11 +16,11 @@ N_PHONES=${1:-4}
 MODE=${2:---all}  # --all, --binary, --model, --status
 
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-PRIMA_WORKER="$PROJECT_DIR/bin/prima-worker"
+SWARM_WORKER="$PROJECT_DIR/bin/cellswarm-worker"
 ADB='"C:\Program Files\platform-tools\adb.exe"'
 SSH_HOST="winpc"
 
-REMOTE_BASE="/data/local/tmp/adb-llm"
+REMOTE_BASE="/data/local/tmp/cellswarm"
 REMOTE_BIN="$REMOTE_BASE/bin"
 REMOTE_MODELS="$REMOTE_BASE/models"
 
@@ -28,7 +28,7 @@ REMOTE_MODELS="$REMOTE_BASE/models"
 MODEL_LOCAL="$HOME/models/deepseek-coder-33b-instruct.Q4_K_M.gguf"
 MODEL_REMOTE="$REMOTE_MODELS/deepseek-coder-33b-instruct.Q4_K_M.gguf"
 # Windows staging path for SCP -> ADB push
-WIN_STAGING="C:\\Users\\Lukio-4090\\prima-deploy"
+WIN_STAGING="C:\\Users\\Lukio-4090\\cellswarm-deploy"
 
 ALL_PHONES=(R3CR904AQKA R3CR90AJCPF R3CRA0KPK9M R3CRB0726FZ
             R3CRA0CJCDD R3CRA0CP7TZ R3CRA0F51KB R3CRA0E77WZ
@@ -44,7 +44,7 @@ fi
 PHONES=("${ALL_PHONES[@]:0:$N_PHONES}")
 
 echo "============================================"
-echo " prima.cpp phone deployment — $N_PHONES devices"
+echo " cellswarm phone deployment — $N_PHONES devices"
 echo "============================================"
 echo "  Mode: $MODE"
 echo "  Phones: ${PHONES[*]}"
@@ -64,14 +64,14 @@ if [ "$MODE" = "--status" ]; then
         fi
 
         # Check binary
-        BIN_OK=$(ssh -o ConnectTimeout=5 "$SSH_HOST" "$ADB -s $SERIAL shell ls -l $REMOTE_BIN/prima-worker 2>/dev/null" || echo "missing")
+        BIN_OK=$(ssh -o ConnectTimeout=5 "$SSH_HOST" "$ADB -s $SERIAL shell ls -l $REMOTE_BIN/cellswarm-worker 2>/dev/null" || echo "missing")
         # Check model
         MODEL_OK=$(ssh -o ConnectTimeout=5 "$SSH_HOST" "$ADB -s $SERIAL shell ls -l $MODEL_REMOTE 2>/dev/null" || echo "missing")
         # Check RAM
         RAM=$(ssh -o ConnectTimeout=5 "$SSH_HOST" "$ADB -s $SERIAL shell cat /proc/meminfo 2>/dev/null" | head -1 | awk '{print $2}')
         RAM_GB=$(echo "scale=1; ${RAM:-0}/1048576" | bc 2>/dev/null || echo "?")
 
-        if echo "$BIN_OK" | grep -q "prima-worker"; then
+        if echo "$BIN_OK" | grep -q "cellswarm-worker"; then
             BIN_STATUS="binary OK"
         else
             BIN_STATUS="NO binary"
@@ -90,11 +90,11 @@ fi
 
 # --- Validate local files ---
 if [ "$MODE" = "--all" ] || [ "$MODE" = "--binary" ]; then
-    if [ ! -f "$PRIMA_WORKER" ]; then
-        echo "ERROR: $PRIMA_WORKER not found. Run ./scripts/build_prima.sh first."
+    if [ ! -f "$SWARM_WORKER" ]; then
+        echo "ERROR: $SWARM_WORKER not found. Run ./scripts/build_cellswarm.sh first."
         exit 1
     fi
-    echo "Binary: $PRIMA_WORKER ($(stat -c%s "$PRIMA_WORKER" | numfmt --to=iec))"
+    echo "Binary: $SWARM_WORKER ($(stat -c%s "$SWARM_WORKER" | numfmt --to=iec))"
 fi
 
 if [ "$MODE" = "--all" ] || [ "$MODE" = "--model" ]; then
@@ -111,8 +111,8 @@ echo "Staging files to WinPC..."
 ssh -o ConnectTimeout=10 "$SSH_HOST" "mkdir -p \"$WIN_STAGING\"" 2>/dev/null || true
 
 if [ "$MODE" = "--all" ] || [ "$MODE" = "--binary" ]; then
-    echo "  Uploading prima-worker to WinPC..."
-    scp -o ConnectTimeout=30 "$PRIMA_WORKER" "${SSH_HOST}:${WIN_STAGING}\\prima-worker"
+    echo "  Uploading cellswarm-worker to WinPC..."
+    scp -o ConnectTimeout=30 "$SWARM_WORKER" "${SSH_HOST}:${WIN_STAGING}\\cellswarm-worker"
     echo "  Binary staged."
 fi
 
@@ -149,9 +149,9 @@ for SERIAL in "${PHONES[@]}"; do
     ssh -o ConnectTimeout=10 "$SSH_HOST" "$ADB -s $SERIAL shell mkdir -p $REMOTE_BIN $REMOTE_MODELS" 2>/dev/null
 
     if [ "$MODE" = "--all" ] || [ "$MODE" = "--binary" ]; then
-        echo "  Pushing prima-worker..."
-        ssh -o ConnectTimeout=30 "$SSH_HOST" "$ADB -s $SERIAL push \"${WIN_STAGING}\\prima-worker\" $REMOTE_BIN/prima-worker" 2>&1 | tail -1
-        ssh -o ConnectTimeout=10 "$SSH_HOST" "$ADB -s $SERIAL shell chmod 755 $REMOTE_BIN/prima-worker" 2>/dev/null
+        echo "  Pushing cellswarm-worker..."
+        ssh -o ConnectTimeout=30 "$SSH_HOST" "$ADB -s $SERIAL push \"${WIN_STAGING}\\cellswarm-worker\" $REMOTE_BIN/cellswarm-worker" 2>&1 | tail -1
+        ssh -o ConnectTimeout=10 "$SSH_HOST" "$ADB -s $SERIAL shell chmod 755 $REMOTE_BIN/cellswarm-worker" 2>/dev/null
     fi
 
     if [ "$MODE" = "--all" ] || [ "$MODE" = "--model" ]; then

@@ -2,12 +2,12 @@
 # One-time setup for each Android device.
 # Usage: ./setup_device.sh [SERIAL]
 #
-# Creates remote directories and optionally pushes rpc-server binary.
+# Creates remote directories and optionally pushes swarm-rpc binary.
 
 set -euo pipefail
 
 SERIAL="${1:-}"
-REMOTE_BASE="/data/local/tmp/adb-llm"
+REMOTE_BASE="/data/local/tmp/cellswarm"
 REMOTE_MODELS="$REMOTE_BASE/models"
 REMOTE_BIN="$REMOTE_BASE/bin"
 
@@ -25,20 +25,20 @@ echo "Setting up device: $SERIAL"
 echo "  Creating directories..."
 adb -s "$SERIAL" shell "mkdir -p $REMOTE_MODELS $REMOTE_BIN"
 
-# Check if rpc-server exists already
-echo "  Checking for rpc-server..."
-if adb -s "$SERIAL" shell "ls $REMOTE_BIN/rpc-server" 2>/dev/null; then
-    echo "  rpc-server already present"
+# Check if swarm-rpc exists already
+echo "  Checking for swarm-rpc..."
+if adb -s "$SERIAL" shell "ls $REMOTE_BIN/swarm-rpc" 2>/dev/null; then
+    echo "  swarm-rpc already present"
 else
     # Check if there's one from exo
-    if adb -s "$SERIAL" shell "ls /data/local/tmp/rpc-server" 2>/dev/null; then
-        echo "  Copying rpc-server from exo location..."
-        adb -s "$SERIAL" shell "cp /data/local/tmp/rpc-server $REMOTE_BIN/rpc-server"
-        adb -s "$SERIAL" shell "chmod +x $REMOTE_BIN/rpc-server"
+    if adb -s "$SERIAL" shell "ls /data/local/tmp/swarm-rpc" 2>/dev/null; then
+        echo "  Copying swarm-rpc from exo location..."
+        adb -s "$SERIAL" shell "cp /data/local/tmp/swarm-rpc $REMOTE_BIN/swarm-rpc"
+        adb -s "$SERIAL" shell "chmod +x $REMOTE_BIN/swarm-rpc"
     else
-        echo "  [WARNING] No rpc-server found. Build and push with:"
-        echo "    adb -s $SERIAL push rpc-server $REMOTE_BIN/rpc-server"
-        echo "    adb -s $SERIAL shell chmod +x $REMOTE_BIN/rpc-server"
+        echo "  [WARNING] No swarm-rpc found. Build and push with:"
+        echo "    adb -s $SERIAL push swarm-rpc $REMOTE_BIN/swarm-rpc"
+        echo "    adb -s $SERIAL shell chmod +x $REMOTE_BIN/swarm-rpc"
     fi
 fi
 

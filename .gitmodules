@@ -1,5 +1,5 @@
-[submodule "vendor/prima.cpp"]
-	path = vendor/prima.cpp
+[submodule "vendor/cellswarm"]
+	path = vendor/cellswarm
 	url = https://gitee.com/zonghang-li/prima.cpp.git
 [submodule "vendor/libzmq"]
 	path = vendor/libzmq

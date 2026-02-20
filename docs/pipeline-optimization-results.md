@@ -2,7 +2,7 @@
 
 ## Overview
 
-Optimization of prima.cpp ring-based distributed inference on Samsung Galaxy Z Fold3 phones connected via ethernet. Target model: DeepSeek Coder 33B Instruct Q4_K_M with 1.3B Q4_K_M draft model for speculative decoding.
+Optimization of cellswarm ring-based distributed inference on Samsung Galaxy Z Fold3 phones connected via ethernet. Target model: DeepSeek Coder 33B Instruct Q4_K_M with 1.3B Q4_K_M draft model for speculative decoding.
 
 **Result: 1.83x speedup (3.345 → 6.117 tok/s) on a single request using 12 phones.**
 
@@ -29,9 +29,9 @@ Optimization of prima.cpp ring-based distributed inference on Samsung Galaxy Z F
 
 ### Phase 1: Remove Debug Logging + Tune Parameters
 
-Guarded all hot-path `fprintf` calls (`[WORKER-TIMING]`, `[RING-TIMING]`, `[SPEC-TIMING]`, `[PIPELINE]`) behind `#ifdef PRIMA_DEBUG`. Increased `--draft-max` from 8 to 24.
+Guarded all hot-path `fprintf` calls (`[WORKER-TIMING]`, `[RING-TIMING]`, `[SPEC-TIMING]`, `[PIPELINE]`) behind `#ifdef SWARM_DEBUG`. Increased `--draft-max` from 8 to 24.
 
-- **Files**: `llama.cpp`, `speculative.cpp`, `bench_prima_ethernet.sh`
+- **Files**: `llama.cpp`, `speculative.cpp`, `bench_cellswarm_ethernet.sh`
 - **Impact**: Eliminated ~2-4ms per token per phone of logging overhead
 
 ### Phase 2: ZMQ + Sync Optimization
@@ -158,19 +158,19 @@ The ~2.6 tok/s gap between theoretical and actual comes from:
 
 ```bash
 # Build
-bash scripts/build_prima.sh
+bash scripts/build_cellswarm.sh
 
 # Deploy to ethernet phones
 for ip in 10.105.0.{12,13,17,19,20,24,28,29,30,31,32,36}; do
-  ~/.local/bin/adb -s "$ip:5555" push bin/prima-worker-spec /data/local/tmp/adb-llm/bin/prima-worker-spec
+  ~/.local/bin/adb -s "$ip:5555" push bin/cellswarm-worker-spec /data/local/tmp/cellswarm/bin/cellswarm-worker-spec
 done
 
 # Benchmark (12 phones, speculative, draft-max 24, seed 100)
-bash scripts/bench_prima_ethernet.sh 12 --spec --draft-max 24 --seed 100
+bash scripts/bench_cellswarm_ethernet.sh 12 --spec --draft-max 24 --seed 100
 
 # Compare without interleaving
-bash scripts/bench_prima_ethernet.sh 12 --spec --draft-max 24 --seed 100 --no-interleave
+bash scripts/bench_cellswarm_ethernet.sh 12 --spec --draft-max 24 --seed 100 --no-interleave
 
 # Dual ring (aggregate throughput)
-bash scripts/bench_prima_dual_ring.sh
+bash scripts/bench_cellswarm_dual_ring.sh
 ```

@@ -119,10 +119,10 @@ We use `-t 4` (4 threads) to match the 4 high-performance cores. Using more thre
 ## On-Phone Directory Layout
 
 ```
-/data/local/tmp/adb-llm/
+/data/local/tmp/cellswarm/
   bin/
-    prima-worker           # Ring worker binary (40 MB, ARM64)
-    prima-worker-spec      # Speculative ring worker, rank 0 only (40 MB)
+    cellswarm-worker           # Ring worker binary (40 MB, ARM64)
+    cellswarm-worker-spec      # Speculative ring worker, rank 0 only (40 MB)
   models/
     deepseek-coder-33b-instruct.Q4_K_M.gguf   # Target model, all phones (18.6 GiB)
     deepseek-coder-1.3b-instruct.Q4_K_M.gguf  # Draft model, rank 0 only (832 MiB)

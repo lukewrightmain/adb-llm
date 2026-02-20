@@ -1,6 +1,6 @@
-# Snapdragon Chipset Reference for prima.cpp
+# Snapdragon Chipset Reference for cellswarm
 
-Build flags, performance estimates, and onboarding guide for Snapdragon SoCs (2021-2026) running our prima.cpp distributed inference pipeline.
+Build flags, performance estimates, and onboarding guide for Snapdragon SoCs (2021-2026) running our cellswarm distributed inference pipeline.
 
 ---
 
@@ -174,8 +174,8 @@ The 0.65 factor for i8mm comes from ARM's published benchmarks showing SMMLA giv
 ### Mixed fleet warning
 
 If your fleet has both i8mm and non-i8mm phones, you need **separate binaries**:
-- `prima-worker-v82` for SD 870/888 (no i8mm)
-- `prima-worker-v9` for SD 8 Gen 1+ (with i8mm)
+- `cellswarm-worker-v82` for SD 870/888 (no i8mm)
+- `cellswarm-worker-v9` for SD 8 Gen 1+ (with i8mm)
 
 See "Multi-Device Fleet" section below.
 
@@ -252,9 +252,9 @@ Look up the SoC in the build flags table above. Key decisions:
 ### 3. Build the binary
 
 ```bash
-# Edit scripts/build_prima.sh or pass flags via environment
-export PRIMA_CFLAGS="-march=armv9-a+i8mm+sve2+dotprod+fp16 -mcpu=cortex-a710"
-scripts/build_prima.sh
+# Edit scripts/build_cellswarm.sh or pass flags via environment
+export SWARM_CFLAGS="-march=armv9-a+i8mm+sve2+dotprod+fp16 -mcpu=cortex-a710"
+scripts/build_cellswarm.sh
 ```
 
 ### 4. Determine thread count and taskset
@@ -283,9 +283,9 @@ scripts/deploy_phones.sh
 scripts/deploy_model.sh 1 --target --all
 
 # Quick single-phone benchmark
-scripts/bench_prima_ethernet.sh 1
+scripts/bench_cellswarm_ethernet.sh 1
 # or for USB phones:
-scripts/bench_prima_phoneonly.sh 1
+scripts/bench_cellswarm_phoneonly.sh 1
 ```
 
 ### 6. Validate with calculator
@@ -314,19 +314,19 @@ Different SoC types require different binaries due to ISA differences (i8mm, SVE
 Build separate binaries for each SoC family:
 ```bash
 # SD 888 (no i8mm)
-PRIMA_CFLAGS="-march=armv8.2-a+dotprod+fp16 -mcpu=cortex-a78" \
-  scripts/build_prima.sh
-mv bin/prima-worker bin/prima-worker-sd888
+SWARM_CFLAGS="-march=armv8.2-a+dotprod+fp16 -mcpu=cortex-a78" \
+  scripts/build_cellswarm.sh
+mv bin/cellswarm-worker bin/cellswarm-worker-sd888
 
 # SD 8 Gen 1+ (i8mm + SVE2)
-PRIMA_CFLAGS="-march=armv9-a+i8mm+sve2+dotprod+fp16 -mcpu=cortex-a710" \
-  scripts/build_prima.sh
-mv bin/prima-worker bin/prima-worker-sd8g1
+SWARM_CFLAGS="-march=armv9-a+i8mm+sve2+dotprod+fp16 -mcpu=cortex-a710" \
+  scripts/build_cellswarm.sh
+mv bin/cellswarm-worker bin/cellswarm-worker-sd8g1
 
 # SD 8 Elite (i8mm, NO SVE2)
-PRIMA_CFLAGS="-march=armv8.7-a+i8mm+dotprod+fp16" \
-  scripts/build_prima.sh
-mv bin/prima-worker bin/prima-worker-sd8elite
+SWARM_CFLAGS="-march=armv8.7-a+i8mm+dotprod+fp16" \
+  scripts/build_cellswarm.sh
+mv bin/cellswarm-worker bin/cellswarm-worker-sd8elite
 ```
 
 Deploy the correct binary to each phone based on its SoC.

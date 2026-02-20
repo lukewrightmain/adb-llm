@@ -1,6 +1,6 @@
 # Phone Calculator Guide
 
-How to determine the optimal number of phones for any model on a prima.cpp ring cluster with speculative decoding and pipeline parallelism.
+How to determine the optimal number of phones for any model on a cellswarm ring cluster with speculative decoding and pipeline parallelism.
 
 This guide walks through the math behind `scripts/phone_calculator.py`. You can either use the script directly or follow the manual steps below.
 

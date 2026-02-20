@@ -15,7 +15,7 @@ All results: DeepSeek Coder 33B Instruct, Q4_K_M quantization (18.6 GiB, 62 laye
 Optimizations applied:
 1. ARM dotprod+fp16 compilation flags
 2. LZ4 compression for RPC traffic
-3. rpc-server hash cache for model loading
+3. swarm-rpc hash cache for model loading
 4. graph_recompute cache bug fix (topology-only comparison)
 5. Batched init_tensor for model loading
 
@@ -23,7 +23,7 @@ The graph_recompute fix was the largest single contributor — it eliminated ~1.
 
 ## Section B: Sequential Ring (Non-Speculative)
 
-prima.cpp ring topology, no speculative decoding, no pipeline parallelism.
+cellswarm ring topology, no speculative decoding, no pipeline parallelism.
 
 | Configuration | tok/s | ms/token | Notes |
 |--------------|-------|----------|-------|
@@ -144,4 +144,4 @@ The draft loop is consistently ~300ms regardless of phone count (it runs entirel
 ## Log Files
 
 All benchmark logs saved to `/tmp/`:
-- `/tmp/prima-ethernet-{N}phone-spec-d8-Q4_K_M.log` for N in {4, 6, 8, 10, 12, 15, 20}
+- `/tmp/cellswarm-ethernet-{N}phone-spec-d8-Q4_K_M.log` for N in {4, 6, 8, 10, 12, 15, 20}

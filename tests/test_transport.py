@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from adb_llm.core.device import DeviceInfo, DeviceState
-from adb_llm.transport.adb_forward import AdbForwardTransport
+from cellswarm.core.device import DeviceInfo, DeviceState
+from cellswarm.transport.adb_forward import AdbForwardTransport
 
 
 @pytest.mark.asyncio

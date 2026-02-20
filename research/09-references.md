@@ -2,15 +2,15 @@
 
 ## Our Project
 
-- **adb-llm repository:** Local at `/home/l4090s/adb-llm/`
+- **cellswarm repository:** Local at `/home/l4090s/cellswarm/`
 - **Results:** [RESULTS.md](../RESULTS.md)
 - **RPC optimization details:** [docs/optimize-rpc-inference.md](../docs/optimize-rpc-inference.md)
 - **Project README:** [README.md](../README.md)
 
 ## Frameworks and Libraries
 
-### prima.cpp
-- **Repository:** https://github.com/nicojbae/prima.cpp
+### cellswarm
+- **Repository:** https://github.com/nicojbae/cellswarm
 - **Description:** Pipeline ring parallelism for llama.cpp. Distributes transformer layers across devices in a ZeroMQ ring topology.
 - **License:** MIT
 

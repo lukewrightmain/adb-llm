@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from adb_llm.core.errors import ModelNotFoundError
-from adb_llm.model.distributor import ModelDistributor
+from cellswarm.core.errors import ModelNotFoundError
+from cellswarm.model.distributor import ModelDistributor
 
 
 @pytest.mark.asyncio

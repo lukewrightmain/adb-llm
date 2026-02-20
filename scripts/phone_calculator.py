@@ -4,7 +4,7 @@ Phone Calculator — Determine optimal phone count for distributed LLM inference
 
 Calculates minimum phones (RAM constraint), optimal phone count (throughput-
 maximizing), layer distribution, and estimated tok/s for a given model config
-running on our prima.cpp fork with pipeline parallelism and speculative decoding.
+running on our cellswarm fork with pipeline parallelism and speculative decoding.
 
 Usage:
     python3 scripts/phone_calculator.py --layers 62 --model-size 18.6 --ram 5.0

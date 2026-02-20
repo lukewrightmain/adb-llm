@@ -9,8 +9,8 @@ All results normalized where possible. "Effective model" accounts for quantizati
 | **Ours (peak)** | **DeepSeek 33B** | **18.6 GiB** | **Q4_K_M** | **10 phones** | **No** | **Ethernet** | **3.345** | **0.33** |
 | Ours (non-spec) | DeepSeek 33B | 18.6 GiB | Q4_K_M | 10 phones | No | Ethernet | 1.04 | 0.10 |
 | Ours (RPC) | DeepSeek 33B | 18.6 GiB | Q4_K_M | 3 phones+host | No | USB tunnel | 1.08 | 0.27 |
-| prima.cpp official | DeepSeek 32B | ~17 GiB | Q4_K_S | Mixed cluster | Yes | InfiniBand | ~11.2 | — |
-| prima.cpp official | LLaMA 70B | ~37 GiB | Q4_K_S | Mixed cluster | Yes | InfiniBand | ~1.48 | — |
+| cellswarm official | DeepSeek 32B | ~17 GiB | Q4_K_S | Mixed cluster | Yes | InfiniBand | ~11.2 | — |
+| cellswarm official | LLaMA 70B | ~37 GiB | Q4_K_S | Mixed cluster | Yes | InfiniBand | ~1.48 | — |
 | RPi CM5 cluster | LLaMA 70B | ~37 GiB | Q4_0 | 10 RPi | No | Gigabit Eth | ~0.85 | 0.085 |
 | Petals | LLaMA 2 70B | ~140 GiB | FP16/INT8 | GPU swarm | Yes | Internet | ~6 | — |
 | PowerInfer-2 | LLaMA 7B | ~4 GiB | Mixed | 1 phone | Yes | N/A | ~11 | 11.0 |
@@ -140,6 +140,6 @@ The 70B model would need ~8 phones minimum to fit in memory, and the optimal con
 | Throughput ceiling | ~3.5 tok/s for 33B is adequate for single-user, not for serving |
 | Network dependency | Ethernet required for stability; WiFi too unreliable |
 | No GPU | Snapdragon 888's Adreno 660 is non-functional for LLM compute |
-| Software maturity | Custom prima.cpp fork, not upstream |
+| Software maturity | Custom cellswarm fork, not upstream |
 | Memory limits | ~5 GiB/phone limits model size without more phones |
 | Maintenance | 40 physical devices to manage, charge, update |

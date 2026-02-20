@@ -172,6 +172,6 @@ Model loading on phones is slow. The 33B Q4_K_M model (18.6 GiB) takes:
 | Cached load (USB RPC) | ~2 min | Hash cache hits, skip transfers |
 | Direct load (Ethernet, --no-mmap) | ~2 min | Read from local storage |
 
-For the ring topology (prima.cpp), each phone loads the full model from local storage and only uses its assigned layers. The `--no-mmap` flag forces a full sequential read at startup (~2 min), but this is amortized over the entire inference session.
+For the ring topology (cellswarm), each phone loads the full model from local storage and only uses its assigned layers. The `--no-mmap` flag forces a full sequential read at startup (~2 min), but this is amortized over the entire inference session.
 
 **Lesson:** Pre-deploy models to phone storage. Never transfer models over the network at inference time.

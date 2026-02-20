@@ -6,7 +6,7 @@
 #   ./scripts/deploy_model.sh 8                     # Deploy to first 8 phones
 #   ./scripts/deploy_model.sh 5 --draft             # Deploy draft model only (rank 0 phone)
 #   ./scripts/deploy_model.sh 5 --both              # Deploy both target + draft models
-#   ./scripts/deploy_model.sh 5 --spec-binary       # Deploy prima-worker-spec binary to rank 0
+#   ./scripts/deploy_model.sh 5 --spec-binary       # Deploy cellswarm-worker-spec binary to rank 0
 #   ./scripts/deploy_model.sh 5 --all               # Deploy target model, draft model, and spec binary
 #   ./scripts/deploy_model.sh 5 --status            # Check Q4_0 model status on phones
 #   MODEL_Q4_0=~/models/other.Q4_0.gguf ./scripts/deploy_model.sh 5
@@ -14,7 +14,7 @@
 # Deploys:
 #   - Target: deepseek-coder-33b-instruct.Q4_0.gguf (~17GB) to ALL phones
 #   - Draft:  deepseek-coder-1.3b-instruct.Q4_0.gguf (~850MB) to rank 0 phone only
-#   - Binary: prima-worker-spec (ARM64 speculative binary) to rank 0 phone only
+#   - Binary: cellswarm-worker-spec (ARM64 speculative binary) to rank 0 phone only
 #
 # If Q4_0 model is not found locally, offers to quantize from Q4_K_M using llama-quantize.
 
@@ -27,7 +27,7 @@ PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 ADB='"C:\Program Files\platform-tools\adb.exe"'
 SSH_HOST="winpc"
 
-REMOTE_BASE="/data/local/tmp/adb-llm"
+REMOTE_BASE="/data/local/tmp/cellswarm"
 REMOTE_BIN="$REMOTE_BASE/bin"
 REMOTE_MODELS="$REMOTE_BASE/models"
 
@@ -36,17 +36,17 @@ MODEL_Q4_0="${MODEL_Q4_0:-$HOME/models/deepseek-coder-33b-instruct.Q4_0.gguf}"
 MODEL_Q4_K_M="$HOME/models/deepseek-coder-33b-instruct.Q4_K_M.gguf"
 DRAFT_Q4_0="${DRAFT_Q4_0:-$HOME/models/deepseek-coder-1.3b-instruct.Q4_0.gguf}"
 DRAFT_Q4_K_M="$HOME/models/deepseek-coder-1.3b-instruct.Q4_K_M.gguf"
-SPEC_BINARY="$PROJECT_DIR/bin/prima-worker-spec"
+SPEC_BINARY="$PROJECT_DIR/bin/cellswarm-worker-spec"
 
 # Remote paths
 REMOTE_MODEL_Q4_0="$REMOTE_MODELS/deepseek-coder-33b-instruct.Q4_0.gguf"
 REMOTE_DRAFT_Q4_0="$REMOTE_MODELS/deepseek-coder-1.3b-instruct.Q4_0.gguf"
-REMOTE_SPEC_BIN="$REMOTE_BIN/prima-worker-spec"
+REMOTE_SPEC_BIN="$REMOTE_BIN/cellswarm-worker-spec"
 
 # Windows staging
-WIN_STAGING="C:\\Users\\Lukio-4090\\prima-deploy-q40"
+WIN_STAGING="C:\\Users\\Lukio-4090\\cellswarm-deploy-q40"
 
-# llama-quantize (host x86_64 build — uses vendor prima.cpp)
+# llama-quantize (host x86_64 build — uses vendor cellswarm)
 LLAMA_QUANTIZE="$HOME/llama.cpp/build/bin/llama-quantize"
 
 # Phone list (all 20 Samsung Galaxy Z Fold3)
@@ -104,7 +104,7 @@ if [ "$MODE" = "--status" ]; then
 
             # Check spec binary
             SPEC_OK=$(ssh -o ConnectTimeout=5 "$SSH_HOST" "$ADB -s $SERIAL shell ls -l $REMOTE_SPEC_BIN 2>/dev/null" || echo "missing")
-            if echo "$SPEC_OK" | grep -q "prima-worker-spec"; then
+            if echo "$SPEC_OK" | grep -q "cellswarm-worker-spec"; then
                 DRAFT_STATUS="${DRAFT_STATUS}, spec binary OK"
             else
                 DRAFT_STATUS="${DRAFT_STATUS}, NO spec binary"
@@ -254,7 +254,7 @@ fi
 # --- Ensure speculative binary exists ---
 if $DEPLOY_SPEC_BIN; then
     if [ ! -f "$SPEC_BINARY" ]; then
-        echo "ERROR: $SPEC_BINARY not found. Run ./scripts/build_prima.sh first."
+        echo "ERROR: $SPEC_BINARY not found. Run ./scripts/build_cellswarm.sh first."
         exit 1
     fi
     SPEC_SIZE_HR=$(stat -c%s "$SPEC_BINARY" | numfmt --to=iec)
@@ -286,8 +286,8 @@ if $DEPLOY_DRAFT; then
 fi
 
 if $DEPLOY_SPEC_BIN; then
-    echo "  Uploading prima-worker-spec to WinPC..."
-    scp -o ConnectTimeout=30 "$SPEC_BINARY" "${SSH_HOST}:${WIN_STAGING}\\prima-worker-spec"
+    echo "  Uploading cellswarm-worker-spec to WinPC..."
+    scp -o ConnectTimeout=30 "$SPEC_BINARY" "${SSH_HOST}:${WIN_STAGING}\\cellswarm-worker-spec"
     echo "  Spec binary staged."
 fi
 
@@ -335,9 +335,9 @@ for idx in "${!PHONES[@]}"; do
 
     # Deploy speculative binary to rank 0 ONLY
     if $DEPLOY_SPEC_BIN && [ "$idx" -eq 0 ]; then
-        echo "  Pushing prima-worker-spec to rank 0..."
+        echo "  Pushing cellswarm-worker-spec to rank 0..."
         ssh -o ConnectTimeout=60 "$SSH_HOST" \
-            "$ADB -s $SERIAL push \"${WIN_STAGING}\\prima-worker-spec\" $REMOTE_SPEC_BIN" 2>&1 | tail -1
+            "$ADB -s $SERIAL push \"${WIN_STAGING}\\cellswarm-worker-spec\" $REMOTE_SPEC_BIN" 2>&1 | tail -1
         ssh -o ConnectTimeout=10 "$SSH_HOST" "$ADB -s $SERIAL shell chmod 755 $REMOTE_SPEC_BIN" 2>/dev/null
     fi
 

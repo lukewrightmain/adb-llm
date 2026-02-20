@@ -2,9 +2,9 @@
 
 Numbers claimed by other projects, as of February 2026. Where possible, we note the hardware, model, and conditions to enable fair comparison.
 
-## prima.cpp Official
+## cellswarm Official
 
-- **Source:** https://github.com/nicojbae/prima.cpp
+- **Source:** https://github.com/nicojbae/cellswarm
 - **Hardware:** Mixed — ARM servers, x86 workstations, GPUs. Not exclusively ARM phones.
 - **Network:** InfiniBand / high-speed Ethernet
 
@@ -77,7 +77,7 @@ Reference benchmarks from llama.cpp benchmarking threads:
 - **Hardware:** Designed for clusters; tested on x86 + RPi
 - **Key limitation:** Requires power-of-2 device count
 
-No published ARM-phone-specific benchmarks. The project supports ARM compilation but primary testing appears to be on x86 nodes and Raspberry Pi boards. The power-of-2 constraint (must use 2, 4, 8, 16 devices) makes scaling less flexible than prima.cpp's ring topology.
+No published ARM-phone-specific benchmarks. The project supports ARM compilation but primary testing appears to be on x86 nodes and Raspberry Pi boards. The power-of-2 constraint (must use 2, 4, 8, 16 devices) makes scaling less flexible than cellswarm's ring topology.
 
 ## MLC LLM
 
@@ -95,7 +95,7 @@ Single-device only. No cluster support. Impressive single-device numbers through
 
 | Project | Model Size | Best tok/s | Hardware | GPU? | Our Advantage |
 |---------|-----------|-----------|----------|------|---------------|
-| prima.cpp official | 32B | ~11.2 | Mixed + InfiniBand | Yes | We're phone-only, commodity Ethernet |
+| cellswarm official | 32B | ~11.2 | Mixed + InfiniBand | Yes | We're phone-only, commodity Ethernet |
 | RPi CM5 cluster | 70B | ~0.85 | 10x RPi | No | We're 4x faster |
 | Petals | 70B | ~6 | GPU swarm + Internet | Yes | We use no GPUs |
 | PowerInfer-2 | 7B | ~11 | 1 phone + GPU | Yes | We run 33B, no GPU |

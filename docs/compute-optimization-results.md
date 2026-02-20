@@ -30,7 +30,7 @@ All tests run back-to-back on the same 12 phones in the same session, eliminatin
 
 ## Optimization 1: Compiler Flags
 
-Changed `build_prima.sh` CFLAGS/CXXFLAGS from:
+Changed `build_cellswarm.sh` CFLAGS/CXXFLAGS from:
 ```
 -march=armv8.2-a+dotprod+fp16
 ```
@@ -53,7 +53,7 @@ Plus LDFLAGS: `-Wl,--gc-sections -Wl,--strip-all`
 
 Hypothesis: `ggml-aarch64.c` has hand-optimized NEON GEMV kernels for Q4_0 (`ggml_gemv_q4_0_4x4_q8_0`, `ggml_gemv_q4_0_4x8_q8_0`, `ggml_gemv_q4_0_8x8_q8_0`) that should be faster than the generic Q4_K_M path.
 
-Reality: These kernels require **repacked** quantization types (`GGML_TYPE_Q4_0_4_4`, `GGML_TYPE_Q4_0_4_8`, `GGML_TYPE_Q4_0_8_8`) which have been **removed** from this version of prima.cpp/llama.cpp:
+Reality: These kernels require **repacked** quantization types (`GGML_TYPE_Q4_0_4_4`, `GGML_TYPE_Q4_0_4_8`, `GGML_TYPE_Q4_0_8_8`) which have been **removed** from this version of cellswarm/llama.cpp:
 
 ```c
 // ggml.h:388-390
@@ -152,13 +152,13 @@ Per-layer: **12-14ms** consistently across all optimization attempts. This is th
 
 ```bash
 # Optimized binary (current best)
-./scripts/build_prima.sh
+./scripts/build_cellswarm.sh
 # Deploy to phones, then:
-./scripts/bench_prima_ethernet.sh 12 --spec --draft-max 24 --seed 100 -n 128
+./scripts/bench_cellswarm_ethernet.sh 12 --spec --draft-max 24 --seed 100 -n 128
 
 # Baseline comparison (switch submodule to baseline-6.1-toks first)
-cd vendor/prima.cpp && git checkout baseline-6.1-toks && cd ../..
-./scripts/build_prima.sh
+cd vendor/cellswarm && git checkout baseline-6.1-toks && cd ../..
+./scripts/build_cellswarm.sh
 # Redeploy, then run same bench command
 ```
 

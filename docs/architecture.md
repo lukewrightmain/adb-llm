@@ -1,6 +1,6 @@
-# Architecture Comparison: Stock llama.cpp → prima.cpp → Our Fork
+# Architecture Comparison: Stock llama.cpp → cellswarm → Our Fork
 
-This document describes the architectural evolution from stock llama.cpp through prima.cpp to our production fork, which runs DeepSeek 33B Q4_K_M at 6.1 tok/s across 12 Samsung Galaxy Z Fold3 phones.
+This document describes the architectural evolution from stock llama.cpp through cellswarm to our production fork, which runs DeepSeek 33B Q4_K_M at 6.1 tok/s across 12 Samsung Galaxy Z Fold3 phones.
 
 ---
 
@@ -10,7 +10,7 @@ This document describes the architectural evolution from stock llama.cpp through
 
 Stock llama.cpp is a single-machine inference engine for GGUF-format LLMs. Key characteristics:
 
-- **Single process**: One llama-server or llama-cli binary runs on one machine
+- **Single process**: One swarm-server or cellswarm-cli binary runs on one machine
 - **Prompt eval (prefill)**: Processes the entire prompt in a single batched forward pass
 - **Token decode**: Generates tokens one at a time, each requiring a full model forward pass
 - **Backend support**: CPU (NEON/AVX/AVX-512), CUDA, Metal, Vulkan, OpenCL, SYCL
@@ -36,11 +36,11 @@ Stock llama.cpp supports speculative decoding with a draft model:
 
 ---
 
-## 2. prima.cpp (Base Fork)
+## 2. cellswarm (Base Fork)
 
 **Origin:** Fork of llama.cpp adding ZMQ-based distributed inference over a ring topology.
 
-prima.cpp splits the model across multiple devices connected in a ring:
+cellswarm splits the model across multiple devices connected in a ring:
 
 - **ZMQ ring topology**: Each rank connects to the next via ZMQ PUSH/PULL sockets
 - **Layer splitting**: Model layers are divided across ranks (e.g., rank 0: layers 0-19, rank 1: layers 20-39, rank 2: layers 40-61)
@@ -58,7 +58,7 @@ prima.cpp splits the model across multiple devices connected in a ring:
 └─────────┘    └─────────┘    └─────────┘
 ```
 
-### Limitations of stock prima.cpp
+### Limitations of stock cellswarm
 
 1. **Sequential ring**: Each token traverses the full ring before sampling — latency = sum of all ranks
 2. **No pipeline parallelism**: The ring is idle while waiting for the previous token to complete
@@ -70,13 +70,13 @@ prima.cpp splits the model across multiple devices connected in a ring:
 
 ## 3. Our Modifications (Production Fork)
 
-Our fork adds four major systems on top of prima.cpp:
+Our fork adds four major systems on top of cellswarm:
 
 ### 3.1 Pipeline Parallelism
 
-**Key file:** `vendor/prima.cpp/src/llama.cpp` — `llama_decode_pipeline()`
+**Key file:** `vendor/cellswarm/src/llama.cpp` — `llama_decode_pipeline()`
 
-Stock prima.cpp processes one token at a time through the ring. Our pipeline parallelism overlaps multiple tokens in flight simultaneously:
+Stock cellswarm processes one token at a time through the ring. Our pipeline parallelism overlaps multiple tokens in flight simultaneously:
 
 ```
 Time →
@@ -92,12 +92,12 @@ Implementation:
 
 Pipeline state is managed via `llama_pipeline_state` struct in llama.cpp, tracking in-flight tokens and completion status per rank.
 
-**Declared in:** `vendor/prima.cpp/include/llama.h`
-**Called from:** `vendor/prima.cpp/common/speculative.cpp`
+**Declared in:** `vendor/cellswarm/include/llama.h`
+**Called from:** `vendor/cellswarm/common/speculative.cpp`
 
 ### 3.2 Interleaved Speculative Decoding
 
-**Key file:** `vendor/prima.cpp/common/speculative.cpp`
+**Key file:** `vendor/cellswarm/common/speculative.cpp`
 
 Stock speculative decoding is serial: draft all tokens, then verify all tokens. Our interleaved approach overlaps drafting with pipeline verification:
 
@@ -119,9 +119,9 @@ This hides ~900ms of draft time behind the pipeline, reducing effective cycle ti
 
 ### 3.3 Packed Metadata (Single-Frame ZMQ)
 
-**Key file:** `vendor/prima.cpp/src/llama.cpp` — `ring_msg_header` struct
+**Key file:** `vendor/cellswarm/src/llama.cpp` — `ring_msg_header` struct
 
-Stock prima.cpp sends 14 separate ZMQ frames per ring message (token ID, layer index, batch size, tensor dimensions, etc.). Our packed format serializes all metadata into a single binary header prepended to the tensor data:
+Stock cellswarm sends 14 separate ZMQ frames per ring message (token ID, layer index, batch size, tensor dimensions, etc.). Our packed format serializes all metadata into a single binary header prepended to the tensor data:
 
 ```c
 struct ring_msg_header {
@@ -158,7 +158,7 @@ Optimizations specific to running on Android phones with Snapdragon 888 (Cortex-
 
 ## 4. Feature Comparison
 
-| Feature | llama.cpp | prima.cpp | Our Fork |
+| Feature | llama.cpp | cellswarm | Our Fork |
 |---|:---:|:---:|:---:|
 | Single-machine inference | Yes | Yes | Yes |
 | Distributed inference | No | Yes (ZMQ ring) | Yes (ZMQ ring) |
@@ -170,7 +170,7 @@ Optimizations specific to running on Android phones with Snapdragon 888 (Cortex-
 | Phone-to-phone direct ring | N/A | No | **Yes** |
 | `--no-mmap` for phones | Available | Available | **Required + enforced** |
 | Thread pinning (taskset) | Manual | Manual | **Scripted** |
-| Batch pipeline decode | N/A | N/A | **Configurable (PRIMA_BATCH_PIPELINE)** |
+| Batch pipeline decode | N/A | N/A | **Configurable (SWARM_BATCH_PIPELINE)** |
 
 ---
 
@@ -178,15 +178,15 @@ Optimizations specific to running on Android phones with Snapdragon 888 (Cortex-
 
 | Component | File | Function/Struct |
 |---|---|---|
-| Pipeline decode | `vendor/prima.cpp/src/llama.cpp` | `llama_decode_pipeline()` |
-| Pipeline state | `vendor/prima.cpp/src/llama.cpp` | `struct llama_pipeline_state` |
-| Pipeline declaration | `vendor/prima.cpp/include/llama.h` | `llama_decode_pipeline()` |
-| Interleaved speculative | `vendor/prima.cpp/common/speculative.cpp` | Main decode loop |
-| Packed metadata header | `vendor/prima.cpp/src/llama.cpp` | `struct ring_msg_header` |
-| ZMQ ring sockets | `vendor/prima.cpp/src/llama.cpp` | ~line 20492 |
-| Ring broadcast startup | `vendor/prima.cpp/src/llama.cpp` | `bcast_startup_args()` |
-| Build script (ARM64) | `scripts/build_prima.sh` | CFLAGS, ENABLE_VULKAN |
-| Benchmark scripts | `scripts/bench_prima_ethernet.sh` | Direct IP ring benchmark |
+| Pipeline decode | `vendor/cellswarm/src/llama.cpp` | `llama_decode_pipeline()` |
+| Pipeline state | `vendor/cellswarm/src/llama.cpp` | `struct llama_pipeline_state` |
+| Pipeline declaration | `vendor/cellswarm/include/llama.h` | `llama_decode_pipeline()` |
+| Interleaved speculative | `vendor/cellswarm/common/speculative.cpp` | Main decode loop |
+| Packed metadata header | `vendor/cellswarm/src/llama.cpp` | `struct ring_msg_header` |
+| ZMQ ring sockets | `vendor/cellswarm/src/llama.cpp` | ~line 20492 |
+| Ring broadcast startup | `vendor/cellswarm/src/llama.cpp` | `bcast_startup_args()` |
+| Build script (ARM64) | `scripts/build_cellswarm.sh` | CFLAGS, ENABLE_VULKAN |
+| Benchmark scripts | `scripts/bench_cellswarm_ethernet.sh` | Direct IP ring benchmark |
 | Model deployment | `scripts/deploy_model.sh` | Push GGUF to phones |
 
 ---
@@ -226,7 +226,7 @@ Optimizations specific to running on Android phones with Snapdragon 888 (Cortex-
 ```
                     ┌──────────────────────────────────────────────┐
                     │              Host (Coding Server)             │
-                    │  - Builds ARM64 binaries (prima-worker-spec) │
+                    │  - Builds ARM64 binaries (cellswarm-worker-spec) │
                     │  - Deploys via ADB / direct IP               │
                     │  - NOT used for inference compute             │
                     └──────────────────────────────────────────────┘

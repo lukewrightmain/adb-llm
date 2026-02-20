@@ -1,4 +1,4 @@
-"""Shared test fixtures for adb-llm tests."""
+"""Shared test fixtures for cellswarm tests."""
 
 from __future__ import annotations
 
@@ -8,8 +8,8 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from adb_llm.core.device import DeviceInfo, DeviceState
-from adb_llm.utils.adb import AdbDevice
+from cellswarm.core.device import DeviceInfo, DeviceState
+from cellswarm.utils.adb import AdbDevice
 
 GGUF_MAGIC = 0x46554747
 
@@ -37,8 +37,8 @@ def mock_device_infos() -> list[DeviceInfo]:
             cpu_cores=8,
             cpu_arch="arm64-v8a",
             android_version="13",
-            has_rpc_server=True,
-            rpc_server_path="/data/local/tmp/adb-llm/bin/rpc-server",
+            has_swarm_rpc=True,
+            swarm_rpc_path="/data/local/tmp/cellswarm/bin/swarm-rpc",
         )
         for i in range(1, 10)
     ]
@@ -66,10 +66,10 @@ def tmp_gguf(tmp_path: Path) -> Path:
 def mock_adb():
     """Patch all ADB calls to be no-ops."""
     with (
-        patch("adb_llm.utils.adb.adb_devices", new_callable=AsyncMock) as m_devices,
-        patch("adb_llm.utils.adb.adb_shell", new_callable=AsyncMock) as m_shell,
-        patch("adb_llm.utils.adb.adb_push", new_callable=AsyncMock) as m_push,
-        patch("adb_llm.utils.adb.adb_forward", new_callable=AsyncMock) as m_forward,
+        patch("cellswarm.utils.adb.adb_devices", new_callable=AsyncMock) as m_devices,
+        patch("cellswarm.utils.adb.adb_shell", new_callable=AsyncMock) as m_shell,
+        patch("cellswarm.utils.adb.adb_push", new_callable=AsyncMock) as m_push,
+        patch("cellswarm.utils.adb.adb_forward", new_callable=AsyncMock) as m_forward,
     ):
         m_push.return_value = (1.0, 1e9)  # 1s, 1GB/s
         yield {

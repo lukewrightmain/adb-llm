@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from adb_llm.model.gguf_info import GGUF_MAGIC, GGUFInfo, read_gguf_info
+from cellswarm.model.gguf_info import GGUF_MAGIC, GGUFInfo, read_gguf_info
 
 
 def test_read_minimal_gguf(tmp_gguf: Path):

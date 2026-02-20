@@ -2,7 +2,7 @@
 
 ## Abstract
 
-We run DeepSeek Coder 33B (Q4_K_M, 18.6 GiB, 62 layers) across a cluster of Samsung Galaxy Z Fold3 phones (Snapdragon 888, ARM CPU-only) using prima.cpp with speculative decoding and pipeline parallelism over Ethernet. Our peak result is **3.345 tokens/second on 10 phones**, achieved February 18, 2026.
+We run DeepSeek Coder 33B (Q4_K_M, 18.6 GiB, 62 layers) across a cluster of Samsung Galaxy Z Fold3 phones (Snapdragon 888, ARM CPU-only) using cellswarm with speculative decoding and pipeline parallelism over Ethernet. Our peak result is **3.345 tokens/second on 10 phones**, achieved February 18, 2026.
 
 This is, to our knowledge, the fastest published result for 33B-class LLM inference on consumer ARM devices without GPU acceleration. It outperforms published Raspberry Pi cluster benchmarks by approximately 4x at comparable model sizes.
 
@@ -18,8 +18,8 @@ This is, to our knowledge, the fastest published result for 33B-class LLM infere
 
 | Project | Model | Devices | GPU? | Network | tok/s |
 |---------|-------|---------|------|---------|-------|
-| **Ours (prima.cpp)** | **33B Q4_K_M** | **10 phones** | **No** | **Ethernet** | **3.345** |
-| prima.cpp official | 32B Q4_K_S | Mixed ARM+x86+GPU | Yes | InfiniBand | ~11.2 |
+| **Ours (cellswarm)** | **33B Q4_K_M** | **10 phones** | **No** | **Ethernet** | **3.345** |
+| cellswarm official | 32B Q4_K_S | Mixed ARM+x86+GPU | Yes | InfiniBand | ~11.2 |
 | RPi CM5 cluster | 70B Q4_0 | 10 RPi boards | No | Ethernet | ~0.85 |
 | llama.cpp RPC (ours) | 33B Q4_K_M | 3 phones + host | No | USB tunnels | 1.08 |
 | Petals | 70B | GPU cluster | Yes | Internet | ~6.0 |
@@ -42,7 +42,7 @@ This is, to our knowledge, the fastest published result for 33B-class LLM infere
 See the [main project README](../README.md) for setup and reproduction instructions. The benchmark script:
 
 ```bash
-./scripts/bench_prima_ethernet.sh 10 --spec
+./scripts/bench_cellswarm_ethernet.sh 10 --spec
 ```
 
 ## Date

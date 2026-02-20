@@ -1,6 +1,6 @@
 # Optimize RPC Inference: 0.75 → 1.08 tok/s (+44%)
 
-**Branch:** `optimize-rpc-inference` (both `adb-llm` and `llama.cpp` repos)
+**Branch:** `optimize-rpc-inference` (both `cellswarm` and `llama.cpp` repos)
 **Date:** 2026-02-14
 **Model:** DeepSeek Coder 33B Q4_K_M (19GB) on 3 Samsung Galaxy Z Fold3 (Snapdragon 888) via USB
 
@@ -16,40 +16,40 @@
 
 ### 1. ARM dotprod + fp16 instructions (device-specific)
 
-**File:** `scripts/build_rpc_server.sh`
+**File:** `scripts/build_swarm_rpc.sh`
 **Scope:** ARMv8.2+ devices (Snapdragon 888, 8 Gen 1/2/3, Dimensity 9000+, etc.)
 
-Added `-DGGML_CPU_ARM_ARCH=armv8.2-a+dotprod+fp16` to the Android rpc-server cmake build. This enables NEON dot product instructions that accelerate Q4_K_M matrix multiplications. Previously the build used the default ARMv8.0 instruction set, leaving performance on the table.
+Added `-DGGML_CPU_ARM_ARCH=armv8.2-a+dotprod+fp16` to the Android swarm-rpc cmake build. This enables NEON dot product instructions that accelerate Q4_K_M matrix multiplications. Previously the build used the default ARMv8.0 instruction set, leaving performance on the table.
 
 **Impact:** ~15-25% faster compute on the phones.
 
 ### 2. LZ4 compression for RPC traffic (universal)
 
-**Files:** `scripts/build_rpc_server.sh`, `src/adb_llm/inference/server_manager.py`
+**Files:** `scripts/build_swarm_rpc.sh`, `src/cellswarm/inference/server_manager.py`
 **Scope:** Any llama.cpp RPC setup
 
-The RPC protocol supports optional LZ4 compression (env var `GGML_RPC_COMPRESS=1`), but it was never compiled into either the host llama-server or the Android rpc-server because `liblz4-dev` wasn't installed and no LZ4 was cross-compiled for Android.
+The RPC protocol supports optional LZ4 compression (env var `GGML_RPC_COMPRESS=1`), but it was never compiled into either the host swarm-server or the Android swarm-rpc because `liblz4-dev` wasn't installed and no LZ4 was cross-compiled for Android.
 
 Changes:
 - **Build script:** Cross-compiles LZ4 v1.10.0 as a static library using the NDK, passes it to cmake via `-DLZ4_LIBRARIES` and `-DLZ4_INCLUDE_DIRS`
-- **Host:** Installed `liblz4-dev`, rebuilt llama-server (now dynamically links `liblz4.so.1`)
-- **server_manager.py:** Passes `GGML_RPC_COMPRESS=1` environment variable to llama-server subprocess
+- **Host:** Installed `liblz4-dev`, rebuilt swarm-server (now dynamically links `liblz4.so.1`)
+- **server_manager.py:** Passes `GGML_RPC_COMPRESS=1` environment variable to swarm-server subprocess
 
 This compresses the `graph_compute` payload (~600KB per phone per token) and `SET_TENSOR` data during model loading.
 
 **Impact:** Reduced per-token network transfer, faster model loading.
 
-### 3. rpc-server hash cache for model loading (universal)
+### 3. swarm-rpc hash cache for model loading (universal)
 
-**File:** `src/adb_llm/inference/rpc_manager.py`
+**File:** `src/cellswarm/inference/rpc_manager.py`
 **Scope:** Any llama.cpp RPC setup
 
-The rpc-server supports `--cache` which creates a file-based cache. On subsequent model loads, `SET_TENSOR_HASH` finds cached tensor data and skips the transfer entirely. This was never enabled because:
+The swarm-rpc supports `--cache` which creates a file-based cache. On subsequent model loads, `SET_TENSOR_HASH` finds cached tensor data and skips the transfer entirely. This was never enabled because:
 - The `--cache` flag wasn't passed
 - On Android, `$HOME` is unset so the default cache path fails
 
 Changes:
-- Sets `LLAMA_CACHE=/data/local/tmp/adb-llm/cache` before launching rpc-server
+- Sets `SWARM_CACHE=/data/local/tmp/cellswarm/cache` before launching swarm-rpc
 - Creates the cache directory
 - Passes `--cache` flag
 
@@ -88,13 +88,13 @@ During model loading, `init_tensor` is called individually for each quantized te
 
 ## Files Modified
 
-### adb-llm repo
+### cellswarm repo
 
 | File | Change |
 |------|--------|
-| `scripts/build_rpc_server.sh` | ARM dotprod+fp16 flag, LZ4 cross-compilation |
-| `src/adb_llm/inference/server_manager.py` | `GGML_RPC_COMPRESS=1` env var |
-| `src/adb_llm/inference/rpc_manager.py` | `--cache` flag, `LLAMA_CACHE` env var |
+| `scripts/build_swarm_rpc.sh` | ARM dotprod+fp16 flag, LZ4 cross-compilation |
+| `src/cellswarm/inference/server_manager.py` | `GGML_RPC_COMPRESS=1` env var |
+| `src/cellswarm/inference/rpc_manager.py` | `--cache` flag, `SWARM_CACHE` env var |
 
 ### llama.cpp repo
 
@@ -106,19 +106,19 @@ During model loading, `init_tensor` is called individually for each quantized te
 
 ```bash
 # Verify ARM dotprod in Android binary
-readelf -A bin/rpc-server | grep -i dot
+readelf -A bin/swarm-rpc | grep -i dot
 
 # Verify LZ4 in Android binary (static)
-nm bin/rpc-server | grep -i lz4
+nm bin/swarm-rpc | grep -i lz4
 
-# Verify LZ4 in host llama-server (dynamic)
-ldd ~/llama.cpp/build/bin/llama-server | grep lz4
+# Verify LZ4 in host swarm-server (dynamic)
+ldd ~/llama.cpp/build/bin/swarm-server | grep lz4
 
 # Verify cache dir on phone
-ssh winpc 'adb -s <serial> shell ls /data/local/tmp/adb-llm/cache/'
+ssh winpc 'adb -s <serial> shell ls /data/local/tmp/cellswarm/cache/'
 
 # Verify graph_recompute hits (debug mode)
-GGML_RPC_DEBUG=1 GGML_RPC_COMPRESS=1 llama-server --model ... --rpc ...
+GGML_RPC_DEBUG=1 GGML_RPC_COMPRESS=1 swarm-server --model ... --rpc ...
 # Look for "graph_recompute" log lines after first generation token
 ```
 

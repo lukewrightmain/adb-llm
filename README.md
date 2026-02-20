@@ -1,6 +1,6 @@
-# adb-llm: Distributed LLM Inference on Android Phones
+# CellSwarm: Distributed LLM Inference on Android Phones
 
-Run large language models (33B parameters) across a ring of Android phones using [prima.cpp](https://github.com/nicojbae/prima.cpp) pipeline-ring parallelism with speculative decoding.
+Run large language models (33B parameters) across a ring of Android phones using [cellswarm](https://github.com/nicojbae/cellswarm) pipeline-ring parallelism with speculative decoding.
 
 **Peak result: 5.8 tok/s** on DeepSeek Coder 33B using 12 Samsung Galaxy Z Fold3 phones over Ethernet with interleaved speculative decoding + pipeline parallelism.
 
@@ -46,7 +46,7 @@ Each phone holds a slice of the 33B model's layers. Tokens flow around the ring 
 
 ```bash
 git clone --recursive <repo-url>
-cd adb-llm
+cd cellswarm
 ```
 
 If you already cloned without `--recursive`:
@@ -55,7 +55,7 @@ git submodule update --init --recursive
 ```
 
 The `vendor/` directory contains:
-- `prima.cpp` — Modified llama.cpp with ZMQ ring topology and pipeline parallelism
+- `cellswarm` — Modified llama.cpp with ZMQ ring topology and pipeline parallelism
 - `libzmq` — ZeroMQ messaging library
 - `cppzmq` — C++ ZMQ bindings
 - `HiGHS` — Optimization solver (host build only)
@@ -63,16 +63,16 @@ The `vendor/` directory contains:
 ### 2. Build Binaries
 
 ```bash
-./scripts/build_prima.sh
+./scripts/build_cellswarm.sh
 ```
 
 This produces:
 | Binary | Arch | Description |
 |--------|------|-------------|
-| `bin/prima-worker` | ARM64 Android | Ring worker (non-rank-0 phones) |
-| `bin/prima-worker-spec` | ARM64 Android | Ring worker with speculative decoding (rank 0 phone) |
-| `bin/prima-host` | x86_64 Linux | Host ring node (optional, for host-in-ring mode) |
-| `bin/prima-host-spec` | x86_64 Linux | Host with speculative decoding |
+| `bin/cellswarm-worker` | ARM64 Android | Ring worker (non-rank-0 phones) |
+| `bin/cellswarm-worker-spec` | ARM64 Android | Ring worker with speculative decoding (rank 0 phone) |
+| `bin/cellswarm-host` | x86_64 Linux | Host ring node (optional, for host-in-ring mode) |
+| `bin/cellswarm-host-spec` | x86_64 Linux | Host with speculative decoding |
 
 Build flags for Snapdragon 888: `-march=armv8.2-a+dotprod+fp16 -mcpu=cortex-a78 -Ofast -fno-finite-math-only` (no `+i8mm` — Snapdragon 888 is ARMv8.4, i8mm needs ARMv8.6+). Binaries are stripped (~3MB vs 40MB unstripped).
 
@@ -103,50 +103,50 @@ Push to phones:
 # Push binary to all phones
 ADB=~/.local/bin/adb
 for ip in 10.105.0.12 10.105.0.13 ...; do
-    $ADB -s ${ip}:5555 push bin/prima-worker /data/local/tmp/adb-llm/bin/prima-worker
-    $ADB -s ${ip}:5555 shell chmod 755 /data/local/tmp/adb-llm/bin/prima-worker
-    $ADB -s ${ip}:5555 push deepseek-coder-33b-instruct.Q4_K_M.gguf /data/local/tmp/adb-llm/models/
+    $ADB -s ${ip}:5555 push bin/cellswarm-worker /data/local/tmp/cellswarm/bin/cellswarm-worker
+    $ADB -s ${ip}:5555 shell chmod 755 /data/local/tmp/cellswarm/bin/cellswarm-worker
+    $ADB -s ${ip}:5555 push deepseek-coder-33b-instruct.Q4_K_M.gguf /data/local/tmp/cellswarm/models/
 done
 
 # Push speculative binary + draft model to rank 0 only
-$ADB -s 10.105.0.12:5555 push bin/prima-worker-spec /data/local/tmp/adb-llm/bin/prima-worker-spec
-$ADB -s 10.105.0.12:5555 shell chmod 755 /data/local/tmp/adb-llm/bin/prima-worker-spec
-$ADB -s 10.105.0.12:5555 push deepseek-coder-1.3b-instruct.Q4_K_M.gguf /data/local/tmp/adb-llm/models/
+$ADB -s 10.105.0.12:5555 push bin/cellswarm-worker-spec /data/local/tmp/cellswarm/bin/cellswarm-worker-spec
+$ADB -s 10.105.0.12:5555 shell chmod 755 /data/local/tmp/cellswarm/bin/cellswarm-worker-spec
+$ADB -s 10.105.0.12:5555 push deepseek-coder-1.3b-instruct.Q4_K_M.gguf /data/local/tmp/cellswarm/models/
 ```
 
 ### 5. Run Benchmark
 
-Edit `scripts/bench_prima_ethernet.sh` to set your phone IPs in the `ALL_PHONES` array, then:
+Edit `scripts/bench_cellswarm_ethernet.sh` to set your phone IPs in the `ALL_PHONES` array, then:
 
 ```bash
 # 10-phone speculative benchmark (best configuration)
-./scripts/bench_prima_ethernet.sh 10 --spec
+./scripts/bench_cellswarm_ethernet.sh 10 --spec
 
 # Non-speculative baseline
-./scripts/bench_prima_ethernet.sh 10
+./scripts/bench_cellswarm_ethernet.sh 10
 
 # Sweep all configurations
-./scripts/bench_prima_ethernet.sh 10 --sweep
+./scripts/bench_cellswarm_ethernet.sh 10 --sweep
 
 # Different draft-max
-./scripts/bench_prima_ethernet.sh 10 --spec --draft-max 12
+./scripts/bench_cellswarm_ethernet.sh 10 --spec --draft-max 12
 ```
 
 ## Benchmark Script Reference
 
-### `scripts/bench_prima_ethernet.sh`
+### `scripts/bench_cellswarm_ethernet.sh`
 
 The main benchmark script for Ethernet-connected phones. No tunnels needed — phones communicate directly via IP.
 
 ```bash
 Usage:
-  ./scripts/bench_prima_ethernet.sh <N_PHONES>                     # Non-speculative
-  ./scripts/bench_prima_ethernet.sh <N_PHONES> --spec              # Speculative decoding
-  ./scripts/bench_prima_ethernet.sh <N_PHONES> --spec --draft-max 24 --seed 100  # Production config
-  ./scripts/bench_prima_ethernet.sh <N_PHONES> --sweep             # Test 4,5,8,10,15,20 phones
-  ./scripts/bench_prima_ethernet.sh <N_PHONES> -fa -c 256          # Flash attention + small context
-  ./scripts/bench_prima_ethernet.sh <N_PHONES> -t 8 --taskset ff   # All cores (not recommended)
-  MODEL=Q4_0 ./scripts/bench_prima_ethernet.sh <N_PHONES>          # Use Q4_0 model
+  ./scripts/bench_cellswarm_ethernet.sh <N_PHONES>                     # Non-speculative
+  ./scripts/bench_cellswarm_ethernet.sh <N_PHONES> --spec              # Speculative decoding
+  ./scripts/bench_cellswarm_ethernet.sh <N_PHONES> --spec --draft-max 24 --seed 100  # Production config
+  ./scripts/bench_cellswarm_ethernet.sh <N_PHONES> --sweep             # Test 4,5,8,10,15,20 phones
+  ./scripts/bench_cellswarm_ethernet.sh <N_PHONES> -fa -c 256          # Flash attention + small context
+  ./scripts/bench_cellswarm_ethernet.sh <N_PHONES> -t 8 --taskset ff   # All cores (not recommended)
+  MODEL=Q4_0 ./scripts/bench_cellswarm_ethernet.sh <N_PHONES>          # Use Q4_0 model
 ```
 
 **What it does:**
@@ -157,13 +157,13 @@ Usage:
 5. Starts rank 0 with prompt, monitors for completion
 6. Collects and displays timing metrics from all ranks
 
-### `scripts/bench_prima_phoneonly.sh`
+### `scripts/bench_cellswarm_phoneonly.sh`
 
 Alternative benchmark for USB-connected phones using ADB tunnel chains (SSH relay through Windows PC). More complex setup but works without Ethernet.
 
-### `scripts/build_prima.sh`
+### `scripts/build_cellswarm.sh`
 
-Cross-compiles prima.cpp for ARM64 Android and x86_64 Linux. Builds libzmq, HiGHS, and both worker/host binaries.
+Cross-compiles cellswarm for ARM64 Android and x86_64 Linux. Builds libzmq, HiGHS, and both worker/host binaries.
 
 ### `scripts/deploy_phones.sh`
 
@@ -182,10 +182,10 @@ Configures static IPs and firewall rules on phones for Ethernet networking.
 ### On-Phone Paths
 
 ```
-/data/local/tmp/adb-llm/
+/data/local/tmp/cellswarm/
   bin/
-    prima-worker          # Ring worker binary
-    prima-worker-spec     # Speculative ring worker (rank 0 only)
+    cellswarm-worker          # Ring worker binary
+    cellswarm-worker-spec     # Speculative ring worker (rank 0 only)
   models/
     deepseek-coder-33b-instruct.Q4_K_M.gguf    # Target model (all phones)
     deepseek-coder-1.3b-instruct.Q4_K_M.gguf   # Draft model (rank 0 only)
@@ -255,15 +255,15 @@ $ADB -s <phone-ip>:5555 shell echo ok
 ### Step 2: Create Directory Structure
 
 ```bash
-$ADB -s <phone-ip>:5555 shell "mkdir -p /data/local/tmp/adb-llm/bin /data/local/tmp/adb-llm/models"
+$ADB -s <phone-ip>:5555 shell "mkdir -p /data/local/tmp/cellswarm/bin /data/local/tmp/cellswarm/models"
 ```
 
 ### Step 3: Deploy Binaries
 
 ```bash
-$ADB -s <phone-ip>:5555 push bin/prima-worker /data/local/tmp/adb-llm/bin/prima-worker
-$ADB -s <phone-ip>:5555 push bin/prima-worker-spec /data/local/tmp/adb-llm/bin/prima-worker-spec
-$ADB -s <phone-ip>:5555 shell "chmod 755 /data/local/tmp/adb-llm/bin/prima-worker /data/local/tmp/adb-llm/bin/prima-worker-spec"
+$ADB -s <phone-ip>:5555 push bin/cellswarm-worker /data/local/tmp/cellswarm/bin/cellswarm-worker
+$ADB -s <phone-ip>:5555 push bin/cellswarm-worker-spec /data/local/tmp/cellswarm/bin/cellswarm-worker-spec
+$ADB -s <phone-ip>:5555 shell "chmod 755 /data/local/tmp/cellswarm/bin/cellswarm-worker /data/local/tmp/cellswarm/bin/cellswarm-worker-spec"
 ```
 
 ### Step 4: Deploy Model
@@ -273,11 +273,11 @@ The 33B target model (~18GB) must be on every phone. The 1.3B draft model only n
 ```bash
 # Target model (ALL phones) — takes ~2 minutes per phone over Ethernet
 $ADB -s <phone-ip>:5555 push models/deepseek-coder-33b-instruct.Q4_K_M.gguf \
-  /data/local/tmp/adb-llm/models/deepseek-coder-33b-instruct.Q4_K_M.gguf
+  /data/local/tmp/cellswarm/models/deepseek-coder-33b-instruct.Q4_K_M.gguf
 
 # Draft model (rank 0 phone ONLY)
 $ADB -s <phone-ip>:5555 push models/deepseek-coder-1.3b-instruct.Q4_K_M.gguf \
-  /data/local/tmp/adb-llm/models/deepseek-coder-1.3b-instruct.Q4_K_M.gguf
+  /data/local/tmp/cellswarm/models/deepseek-coder-1.3b-instruct.Q4_K_M.gguf
 ```
 
 ### Step 5: Verify Phone-to-Phone Connectivity
@@ -290,7 +290,7 @@ $ADB -s <new-phone-ip>:5555 shell "ping -c 3 <existing-phone-ip>"
 
 ### Step 6: Add to Benchmark Script
 
-Edit `scripts/bench_prima_ethernet.sh` and add the new phone IP to the `ALL_PHONES` array:
+Edit `scripts/bench_cellswarm_ethernet.sh` and add the new phone IP to the `ALL_PHONES` array:
 
 ```bash
 ALL_PHONES=(
@@ -305,10 +305,10 @@ ALL_PHONES=(
 
 ```bash
 # Quick non-speculative test with just the new phone + 1 existing phone
-./scripts/bench_prima_ethernet.sh 2
+./scripts/bench_cellswarm_ethernet.sh 2
 
 # Full cluster test
-./scripts/bench_prima_ethernet.sh 12 --spec --draft-max 24 --seed 100 -n 128
+./scripts/bench_cellswarm_ethernet.sh 12 --spec --draft-max 24 --seed 100 -n 128
 ```
 
 ### Batch Onboarding (Multiple Phones)
@@ -320,12 +320,12 @@ ADB=~/.local/bin/adb
 for ip in "${PHONES[@]}"; do
     echo "Onboarding $ip..."
     $ADB connect ${ip}:5555
-    $ADB -s ${ip}:5555 shell "mkdir -p /data/local/tmp/adb-llm/bin /data/local/tmp/adb-llm/models"
-    $ADB -s ${ip}:5555 push bin/prima-worker /data/local/tmp/adb-llm/bin/prima-worker
-    $ADB -s ${ip}:5555 push bin/prima-worker-spec /data/local/tmp/adb-llm/bin/prima-worker-spec
-    $ADB -s ${ip}:5555 shell "chmod 755 /data/local/tmp/adb-llm/bin/prima-worker /data/local/tmp/adb-llm/bin/prima-worker-spec"
+    $ADB -s ${ip}:5555 shell "mkdir -p /data/local/tmp/cellswarm/bin /data/local/tmp/cellswarm/models"
+    $ADB -s ${ip}:5555 push bin/cellswarm-worker /data/local/tmp/cellswarm/bin/cellswarm-worker
+    $ADB -s ${ip}:5555 push bin/cellswarm-worker-spec /data/local/tmp/cellswarm/bin/cellswarm-worker-spec
+    $ADB -s ${ip}:5555 shell "chmod 755 /data/local/tmp/cellswarm/bin/cellswarm-worker /data/local/tmp/cellswarm/bin/cellswarm-worker-spec"
     $ADB -s ${ip}:5555 push models/deepseek-coder-33b-instruct.Q4_K_M.gguf \
-      /data/local/tmp/adb-llm/models/deepseek-coder-33b-instruct.Q4_K_M.gguf &
+      /data/local/tmp/cellswarm/models/deepseek-coder-33b-instruct.Q4_K_M.gguf &
 done
 wait
 echo "All phones onboarded. Model push may still be running in background."
@@ -437,20 +437,20 @@ See [RESULTS.md](RESULTS.md) for full benchmark history and [docs/compute-optimi
 ## Project Structure
 
 ```
-adb-llm/
+cellswarm/
   bin/                      # Compiled binaries (not committed, build from source)
   scripts/
-    bench_prima_ethernet.sh # Ethernet phone benchmark
-    bench_prima_phoneonly.sh # USB phone benchmark (tunnel-based)
-    bench_prima.sh          # Host+phone benchmark
-    bench_prima_spec.sh     # Speculative decoding benchmark
-    build_prima.sh          # Cross-compilation script
+    bench_cellswarm_ethernet.sh # Ethernet phone benchmark
+    bench_cellswarm_phoneonly.sh # USB phone benchmark (tunnel-based)
+    bench_cellswarm.sh          # Host+phone benchmark
+    bench_cellswarm_spec.sh     # Speculative decoding benchmark
+    build_cellswarm.sh          # Cross-compilation script
     deploy_phones.sh        # Deploy binaries/models to phones
     deploy_model.sh         # Deploy Q4_0 models
     setup_ethernet.sh       # Configure phone Ethernet networking
-  src/adb_llm/              # Python orchestration code
+  src/cellswarm/              # Python orchestration code
   vendor/
-    prima.cpp/              # Modified llama.cpp with ring topology
+    cellswarm/              # Modified llama.cpp with ring topology
     libzmq/                 # ZeroMQ messaging
     cppzmq/                 # C++ ZMQ bindings
     HiGHS/                  # Optimization solver
@@ -464,11 +464,11 @@ adb-llm/
 Reduce the number of layers per phone by adding more phones to the ring, or use a smaller context size (`-c 256`).
 
 ### Workers fail to start
-Check the phone log: `adb -s <ip>:5555 shell cat /data/local/tmp/prima-worker.log`
+Check the phone log: `adb -s <ip>:5555 shell cat /data/local/tmp/cellswarm-worker.log`
 
 Common issues:
 - Model file missing or corrupted (re-push)
-- Port already in use (kill old workers: `adb shell pkill -9 prima-worker`)
+- Port already in use (kill old workers: `adb shell pkill -9 cellswarm-worker`)
 - Not enough RAM (close other apps, reduce layers)
 
 ### Very slow performance (~0.01 tok/s)
@@ -482,4 +482,4 @@ Phones can't reach each other. Verify with `adb shell ping <other-phone-ip>`. Ch
 
 ## License
 
-This project builds on [prima.cpp](https://github.com/nicojbae/prima.cpp) (MIT License) and [llama.cpp](https://github.com/ggerganov/llama.cpp) (MIT License).
+This project builds on [cellswarm](https://github.com/nicojbae/cellswarm) (MIT License) and [llama.cpp](https://github.com/ggerganov/llama.cpp) (MIT License).

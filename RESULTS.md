@@ -125,13 +125,13 @@ See [README.md](README.md) for setup instructions and how to reproduce these ben
 ## Log Files
 
 All benchmark logs are saved to `/tmp/`:
-- `/tmp/prima-ethernet-4phone-spec-d8-Q4_K_M.log`
-- `/tmp/prima-ethernet-6phone-spec-d8-Q4_K_M.log`
-- `/tmp/prima-ethernet-8phone-spec-d8-Q4_K_M.log`
-- `/tmp/prima-ethernet-10phone-spec-d8-Q4_K_M.log`
-- `/tmp/prima-ethernet-12phone-spec-d8-Q4_K_M.log`
-- `/tmp/prima-ethernet-15phone-spec-d8-Q4_K_M.log`
-- `/tmp/prima-ethernet-20phone-spec-d8-Q4_K_M.log`
+- `/tmp/cellswarm-ethernet-4phone-spec-d8-Q4_K_M.log`
+- `/tmp/cellswarm-ethernet-6phone-spec-d8-Q4_K_M.log`
+- `/tmp/cellswarm-ethernet-8phone-spec-d8-Q4_K_M.log`
+- `/tmp/cellswarm-ethernet-10phone-spec-d8-Q4_K_M.log`
+- `/tmp/cellswarm-ethernet-12phone-spec-d8-Q4_K_M.log`
+- `/tmp/cellswarm-ethernet-15phone-spec-d8-Q4_K_M.log`
+- `/tmp/cellswarm-ethernet-20phone-spec-d8-Q4_K_M.log`
 
 ---
 
@@ -156,7 +156,7 @@ ZMQ I/O threads 2→4, SNDBUF/RCVBUF 256KB, startup sleep 100→10ms, ZMQ_LINGER
 **Verdict:** No measurable impact.
 
 ## Optimization 3: Batch Pipeline Tokens
-Send multiple tokens through pipeline per cycle (PRIMA_BATCH_PIPELINE=N).
+Send multiple tokens through pipeline per cycle (SWARM_BATCH_PIPELINE=N).
 
 | Batch Size | tok/s | Notes |
 |------------|-------|-------|
@@ -176,7 +176,7 @@ per-layer compute time, not networking optimizations. Next steps: Q4_0 quantizat
 flash attention, context reduction.
 
 ## Environment Variable
-`PRIMA_BATCH_PIPELINE=N` — set batch size at runtime (default 1). Only increase on
+`SWARM_BATCH_PIPELINE=N` — set batch size at runtime (default 1). Only increase on
 hardware with i8mm or GPU-accelerated GEMM.
 
 ---
@@ -204,7 +204,7 @@ minimal impact on their own (NEON intrinsics dominate the hot path).
 ## Q4_0 Quantization
 Expected: faster NEON GEMV via specialized kernels in ggml-aarch64.c.
 Reality: Q4_0 repacked types (`Q4_0_4_4`, `Q4_0_4_8`, `Q4_0_8_8`) have been
-**removed** from this version of prima.cpp. Standard Q4_0 uses the same generic
+**removed** from this version of cellswarm. Standard Q4_0 uses the same generic
 dot product path.
 
 | Config | tok/s | Accept% | Notes |

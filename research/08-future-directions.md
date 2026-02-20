@@ -8,8 +8,8 @@ ARM's KleidiAI kernels claim 25-51% speedup for LLM workloads on ARM CPUs. These
 
 - **Potential gain:** 25-40% per-phone compute reduction (conservative estimate without i8mm)
 - **Projected impact:** At 10 phones, per-rank compute drops from ~72ms to ~45-54ms. Pipeline drain accelerates. Projected throughput: **4.0-4.5 tok/s**.
-- **Blocker:** Requires integrating KleidiAI into our prima.cpp fork. The dotprod path should work on Snapdragon 888 even without i8mm.
-- **Effort:** Medium — merge upstream llama.cpp KleidiAI support into prima.cpp vendor.
+- **Blocker:** Requires integrating KleidiAI into our cellswarm fork. The dotprod path should work on Snapdragon 888 even without i8mm.
+- **Effort:** Medium — merge upstream llama.cpp KleidiAI support into cellswarm vendor.
 
 ### Newer Hardware (Snapdragon 8 Gen 3+)
 

@@ -4,22 +4,22 @@ This document surveys all known methods for running large language models on ARM
 
 ## Multi-Device Frameworks
 
-### prima.cpp
+### cellswarm
 
-- **Repository:** https://github.com/nicojbae/prima.cpp
+- **Repository:** https://github.com/nicojbae/cellswarm
 - **Parallelism:** Pipeline ring topology (ZeroMQ sockets)
 - **ARM support:** Yes (cross-compilation for ARM64 Android)
 - **Cluster support:** Yes (N-device ring over TCP)
 - **Key claims:** 15x throughput over llama.cpp for 70B models; 674ms/tok for 70B on mixed hardware; 89ms/tok (11.2 tok/s) for 32B; 26 tok/s with speculative decoding
 - **Our use:** Forked and extended with pipeline parallelism (`llama_decode_pipeline()`)
 
-prima.cpp distributes transformer layers across devices in a ring. Each device processes its assigned layers and forwards activations to the next. Unlike tensor parallelism, this requires no synchronization barriers within a layer — each device is independent. The trade-off is that throughput is limited by the sequential pipeline depth.
+cellswarm distributes transformer layers across devices in a ring. Each device processes its assigned layers and forwards activations to the next. Unlike tensor parallelism, this requires no synchronization barriers within a layer — each device is independent. The trade-off is that throughput is limited by the sequential pipeline depth.
 
 ### llama.cpp RPC
 
 - **Repository:** https://github.com/ggerganov/llama.cpp (built-in RPC backend)
 - **Parallelism:** Tensor split (GGML backend splits tensors across RPC servers)
-- **ARM support:** Yes (rpc-server compiles for ARM64)
+- **ARM support:** Yes (swarm-rpc compiles for ARM64)
 - **Cluster support:** Yes (N RPC servers, one host coordinates)
 - **Key claims:** Most mature distributed inference. Benchmarked at 48 tok/s with GPU backends.
 - **Our use:** Initial approach. Achieved 1.08 tok/s on 3 phones (see [03-our-approach.md](03-our-approach.md))
@@ -66,7 +66,7 @@ RPC distributes individual tensor operations — the host sends `graph_compute` 
 
 | Project | Parallelism | ARM? | Cluster? | Key Claim | Our Assessment |
 |---------|------------|------|----------|-----------|----------------|
-| **prima.cpp** | Pipeline ring | Yes | Yes | 15x over llama.cpp | Best for ARM phone clusters |
+| **cellswarm** | Pipeline ring | Yes | Yes | 15x over llama.cpp | Best for ARM phone clusters |
 | llama.cpp RPC | Tensor split | Yes | Yes | 48 tok/s (GPU) | High per-token comm overhead |
 | distributed-llama | Tensor parallel | Yes | Yes | RPi support | Power-of-2 constraint, no benchmarks |
 | Petals | P2P pipeline | No ARM | GPU only | 6 tok/s 70B | Not applicable |
@@ -83,7 +83,7 @@ These optimize inference on a single ARM device. They complement multi-device fr
 - **Claim:** 25-51% speedup on ARM CPUs for LLM workloads
 - **Mechanism:** Hand-tuned NEON/SVE/SME kernels for quantized matrix multiplication
 - **Status:** Available in llama.cpp since late 2025 (requires ARMv8.6+ for full benefit with i8mm)
-- **Our relevance:** Cannot use i8mm path on Snapdragon 888 (ARMv8.4). The dotprod path may still provide gains. Not yet integrated into our prima.cpp fork.
+- **Our relevance:** Cannot use i8mm path on Snapdragon 888 (ARMv8.4). The dotprod path may still provide gains. Not yet integrated into our cellswarm fork.
 
 ### PowerInfer-2
 

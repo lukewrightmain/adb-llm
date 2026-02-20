@@ -2,7 +2,7 @@
 # Enable USB tethering (RNDIS or NCM) on Samsung Galaxy Z Fold3 phones
 # and assign static IPs for direct TCP/IP over USB.
 #
-# This eliminates ADB tunnel overhead for prima.cpp ring communication.
+# This eliminates ADB tunnel overhead for cellswarm ring communication.
 # Expected latency: 0.5-2ms per hop (vs 10-20ms with ADB tunnels).
 #
 # Usage:

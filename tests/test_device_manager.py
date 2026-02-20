@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import pytest
 
-from adb_llm.core.device import DeviceState
-from adb_llm.core.device_manager import DeviceManager, _parse_df, _parse_meminfo, _parse_thermal
-from adb_llm.core.errors import DeviceNotFoundError
-from adb_llm.utils.adb import AdbDevice
+from cellswarm.core.device import DeviceState
+from cellswarm.core.device_manager import DeviceManager, _parse_df, _parse_meminfo, _parse_thermal
+from cellswarm.core.errors import DeviceNotFoundError
+from cellswarm.utils.adb import AdbDevice
 
 
 def test_parse_meminfo():

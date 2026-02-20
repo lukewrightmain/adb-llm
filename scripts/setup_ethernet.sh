@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Set up Ethernet networking for prima.cpp phone ring.
+# Set up Ethernet networking for cellswarm phone ring.
 #
 # FALLBACK transport if USB tethering (RNDIS/NCM) fails.
 # Each phone connects via USB-C hub with Ethernet adapter.
