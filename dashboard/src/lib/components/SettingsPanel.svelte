@@ -2,15 +2,16 @@
 	import {
 		getSettings,
 		updateSettings,
-		getModelsData,
-		fetchModels,
+		getManagedDevices,
 	} from '$lib/stores/app.svelte';
-	import { onMount } from 'svelte';
 
 	const settings = $derived(getSettings());
-	const models = $derived(getModelsData());
+	const devices = $derived(getManagedDevices());
 
-	onMount(() => { fetchModels(); });
+	// Get available models from first ready device
+	const availableModels = $derived(
+		devices.find(d => d.state === 'ready')?.models ?? []
+	);
 
 	function toggle(key: 'speculative' | 'prefetch') {
 		updateSettings({ [key]: !settings[key] });
@@ -29,7 +30,7 @@
 <div class="h-full overflow-y-auto">
 	<div class="p-4 space-y-5 max-w-lg mx-auto">
 		<h2 class="text-sm font-bold">Ring Settings</h2>
-		<p class="text-[10px] text-muted -mt-3">These are used as defaults when starting a ring. Saved automatically.</p>
+		<p class="text-[10px] text-muted -mt-3">Defaults for new rings. Saved automatically.</p>
 
 		<!-- Default Model -->
 		<div>
@@ -41,8 +42,8 @@
 				class="w-full bg-surface border border-border rounded-lg px-3 py-2.5 text-xs text-foreground min-h-[44px]"
 			>
 				<option value="">None (choose each time)</option>
-				{#each models.local_models as m}
-					<option value={m.name}>{m.name} ({m.size_mb}MB)</option>
+				{#each availableModels as m}
+					<option value={m}>{m}</option>
 				{/each}
 			</select>
 		</div>
@@ -58,7 +59,7 @@
 				/>
 				<div>
 					<span class="text-xs font-bold">Speculative Decoding</span>
-					<p class="text-[10px] text-muted">Use a small draft model to predict tokens, verify in batch. ~2-6x faster.</p>
+					<p class="text-[10px] text-muted">Draft model predicts tokens, ring verifies. ~2-6x faster.</p>
 				</div>
 			</label>
 
@@ -72,8 +73,8 @@
 						class="w-full bg-surface border border-border rounded-lg px-3 py-2.5 text-xs text-foreground min-h-[44px]"
 					>
 						<option value="">None</option>
-						{#each models.local_models as m}
-							<option value={m.name}>{m.name} ({m.size_mb}MB)</option>
+						{#each availableModels as m}
+							<option value={m}>{m}</option>
 						{/each}
 					</select>
 				</div>
@@ -90,7 +91,6 @@
 						/>
 						<span class="text-xs w-8 text-center">{settings.draftMax}</span>
 					</div>
-					<p class="text-[10px] text-muted mt-1">Higher = more speculative tokens per cycle. 24 is optimal for 12 phones.</p>
 				</div>
 			{/if}
 		</div>
@@ -111,7 +111,7 @@
 
 		<!-- Context Size -->
 		<div>
-			<label class="block text-xs text-muted mb-1" for="set-ctx">Context Size</label>
+			<label class="block text-xs text-muted mb-1">Context Size</label>
 			<div class="flex gap-2">
 				{#each [512, 1024, 2048, 4096] as val}
 					<button
@@ -121,7 +121,6 @@
 					>{val}</button>
 				{/each}
 			</div>
-			<p class="text-[10px] text-muted mt-1">Lower = less RAM per phone. 2048 for chat, 512 for benchmarks.</p>
 		</div>
 
 		<!-- Prefetch -->
@@ -134,16 +133,19 @@
 			/>
 			<div>
 				<span class="text-xs">Prefetch layers</span>
-				<p class="text-[10px] text-muted">Overlap layer loading with computation. Usually faster.</p>
+				<p class="text-[10px] text-muted">Overlap layer loading with computation.</p>
 			</div>
 		</label>
 
 		<!-- Info -->
 		<div class="p-3 bg-surface/50 rounded-lg border border-border/50">
-			<h3 class="text-[10px] font-bold text-muted mb-1">Production Config</h3>
+			<h3 class="text-[10px] font-bold text-muted mb-1">About CellSwarm</h3>
 			<p class="text-[10px] text-muted leading-relaxed">
-				Best results: 12 phones, speculative with d24, Q4_K_M target + 1.3B Q4_K_M draft, context 2048, --no-mmap, prefetch, -t 4, taskset f0.
-				Peak: 6.1 tok/s.
+				WebUSB dashboard — no backend server. Browser communicates directly with phones via USB.
+				Chat streams via HTTP over ADB sockets to the cellswarm-master binary.
+			</p>
+			<p class="text-[10px] text-muted leading-relaxed mt-2">
+				Best: 12 phones, speculative d24, Q4_K_M + 1.3B draft, context 2048. Peak: 6.1 tok/s.
 			</p>
 		</div>
 	</div>

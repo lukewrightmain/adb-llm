@@ -1,44 +1,45 @@
 <script lang="ts">
 	import {
-		getModelsData,
-		getDownloadJobs,
-		getDistributeJobs,
-		getTargetDevicesString,
-		fetchModels,
-		downloadModel,
-		distributeModel,
-		pollJobProgress,
-		startJobPolling,
+		getManagedDevices,
+		getDeviceModels,
+		refreshModels,
 		setGlobalError,
 	} from '$lib/stores/app.svelte';
+	import { downloadModelOnDevice, deleteModel } from '$lib/services/model-manager';
 	import { onMount } from 'svelte';
 
-	const models = $derived(getModelsData());
-	const dlJobs = $derived(getDownloadJobs());
-	const distJobs = $derived(getDistributeJobs());
+	const devices = $derived(getManagedDevices());
+	const deviceModels = $derived(getDeviceModels());
+	const connectedDevices = $derived(devices.filter(d => d.adb));
 
-	let repoId = $state('');
-	let filename = $state('');
 	let directUrl = $state('');
-	let downloadMode = $state<'hf' | 'url'>('hf');
+	let filename = $state('');
 	let downloading = $state(false);
 
 	onMount(() => {
-		fetchModels();
-		pollJobProgress();
+		refreshModels();
 	});
 
 	async function handleDownload() {
+		if (!directUrl || !filename) {
+			setGlobalError('Enter URL and filename');
+			return;
+		}
 		downloading = true;
 		try {
-			if (downloadMode === 'hf') {
-				if (!repoId || !filename) { setGlobalError('Enter repo ID and filename'); return; }
-				await downloadModel({ repo_id: repoId, filename });
-			} else {
-				if (!directUrl) { setGlobalError('Enter a URL'); return; }
-				await downloadModel({ url: directUrl });
-			}
-			repoId = ''; filename = ''; directUrl = '';
+			// Download to all connected devices in parallel
+			await Promise.all(
+				connectedDevices.map(async (d) => {
+					try {
+						await downloadModelOnDevice(d.adb!, directUrl, filename);
+					} catch (e) {
+						console.error(`Download failed on ${d.serial}:`, e);
+					}
+				})
+			);
+			directUrl = '';
+			filename = '';
+			setGlobalError(null);
 		} catch (e) {
 			setGlobalError(`Download failed: ${e}`);
 		} finally {
@@ -46,93 +47,94 @@
 		}
 	}
 
-	async function handleDistribute(name: string) {
+	async function handleDelete(serial: string, modelName: string) {
+		const device = devices.find(d => d.serial === serial);
+		if (!device?.adb) return;
+
 		try {
-			await distributeModel(name, getTargetDevicesString());
+			await deleteModel(device.adb, modelName);
+			await refreshModels();
 		} catch (e) {
-			setGlobalError(`Distribute failed: ${e}`);
+			setGlobalError(`Delete failed: ${e}`);
 		}
 	}
 
-	function statusBadgeClass(status: string): string {
-		switch (status) {
-			case 'running': return 'bg-primary/15 text-primary';
-			case 'completed': case 'done': return 'bg-success/15 text-success';
-			case 'failed': case 'error': return 'bg-error/15 text-error';
-			default: return 'bg-muted/15 text-muted';
+	// Get unique model names across all devices
+	const allModelNames = $derived(() => {
+		const names = new Set<string>();
+		for (const models of deviceModels.values()) {
+			for (const m of models) names.add(m.name);
 		}
-	}
+		return Array.from(names).sort();
+	});
 </script>
 
 <div class="h-full overflow-y-auto">
 	<div class="p-4 space-y-5 max-w-lg mx-auto">
 
-		<!-- Local Models -->
+		<!-- Models per device -->
 		<div>
-			<h2 class="text-sm font-bold mb-2">Local Models</h2>
-			{#if models.local_models.length === 0}
-				<div class="text-xs text-muted py-4 text-center">No models downloaded yet</div>
+			<div class="flex items-center justify-between mb-2">
+				<h2 class="text-sm font-bold">Device Models</h2>
+				<button
+					class="text-xs text-primary active:text-primary-dim"
+					onclick={refreshModels}
+				>Refresh</button>
+			</div>
+
+			{#if connectedDevices.length === 0}
+				<div class="text-xs text-muted py-4 text-center">No devices connected</div>
 			{:else}
-				<div class="space-y-1.5">
-					{#each models.local_models as m (m.name)}
-						<div class="flex items-center gap-2 px-3 py-2 bg-surface border border-border rounded-lg min-h-[44px]">
-							<div class="flex-1 min-w-0">
-								<div class="text-xs truncate">{m.name}</div>
-								<div class="text-[10px] text-muted">{m.size_mb}MB</div>
+				<div class="space-y-3">
+					{#each connectedDevices as dev (dev.serial)}
+						{@const models = deviceModels.get(dev.serial) ?? []}
+						<div class="p-3 bg-surface border border-border rounded-lg">
+							<div class="text-xs font-bold mb-2">{dev.shortSerial}
+								<span class="font-normal text-muted ml-1">{dev.info?.model ?? ''}</span>
 							</div>
-							<button
-								class="px-2.5 py-1.5 text-[10px] rounded-lg bg-primary/10 text-primary active:bg-primary/20 shrink-0 min-h-[32px]"
-								onclick={() => handleDistribute(m.name)}
-							>Distribute</button>
+							{#if models.length === 0}
+								<div class="text-[10px] text-muted">No models</div>
+							{:else}
+								<div class="space-y-1">
+									{#each models as m (m.name)}
+										<div class="flex items-center gap-2 text-[10px]">
+											<span class="flex-1 truncate text-foreground">{m.name}</span>
+											<span class="text-muted shrink-0">{m.sizeMb > 1024 ? `${(m.sizeMb / 1024).toFixed(1)}GB` : `${m.sizeMb}MB`}</span>
+											<button
+												class="text-error/60 active:text-error shrink-0"
+												onclick={() => handleDelete(dev.serial, m.name)}
+											>
+												<svg class="w-3.5 h-3.5" viewBox="0 0 20 20" fill="currentColor">
+													<path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd"/>
+												</svg>
+											</button>
+										</div>
+									{/each}
+								</div>
+							{/if}
 						</div>
 					{/each}
 				</div>
 			{/if}
-
-			<button
-				class="mt-2 text-xs text-primary active:text-primary-dim"
-				onclick={fetchModels}
-			>Refresh models</button>
 		</div>
 
-		<!-- Download -->
+		<!-- Download Model -->
 		<div>
-			<h2 class="text-sm font-bold mb-2">Download Model</h2>
+			<h2 class="text-sm font-bold mb-2">Download Model to Devices</h2>
+			<p class="text-[10px] text-muted mb-3">Phones download directly via wget. Enter the GGUF URL.</p>
 
-			<!-- Mode toggle -->
-			<div class="flex gap-1 mb-3">
-				<button
-					class="flex-1 py-2 text-xs rounded-lg min-h-[40px] transition-colors
-						{downloadMode === 'hf' ? 'bg-primary/15 text-primary' : 'bg-surface text-muted'}"
-					onclick={() => downloadMode = 'hf'}
-				>HuggingFace</button>
-				<button
-					class="flex-1 py-2 text-xs rounded-lg min-h-[40px] transition-colors
-						{downloadMode === 'url' ? 'bg-primary/15 text-primary' : 'bg-surface text-muted'}"
-					onclick={() => downloadMode = 'url'}
-				>Direct URL</button>
-			</div>
-
-			{#if downloadMode === 'hf'}
-				<div class="space-y-2">
-					<input
-						bind:value={repoId}
-						placeholder="Repo ID (e.g. TheBloke/...)"
-						class="w-full bg-surface border border-border rounded-lg px-3 py-2.5 text-xs text-foreground min-h-[44px] outline-none focus:border-primary/50"
-					/>
-					<input
-						bind:value={filename}
-						placeholder="Filename (e.g. model.Q4_K_M.gguf)"
-						class="w-full bg-surface border border-border rounded-lg px-3 py-2.5 text-xs text-foreground min-h-[44px] outline-none focus:border-primary/50"
-					/>
-				</div>
-			{:else}
+			<div class="space-y-2">
 				<input
 					bind:value={directUrl}
-					placeholder="https://..."
+					placeholder="https://huggingface.co/.../model.gguf"
 					class="w-full bg-surface border border-border rounded-lg px-3 py-2.5 text-xs text-foreground min-h-[44px] outline-none focus:border-primary/50"
 				/>
-			{/if}
+				<input
+					bind:value={filename}
+					placeholder="Filename (e.g. deepseek-coder-33b.Q4_K_M.gguf)"
+					class="w-full bg-surface border border-border rounded-lg px-3 py-2.5 text-xs text-foreground min-h-[44px] outline-none focus:border-primary/50"
+				/>
+			</div>
 
 			<button
 				class="w-full mt-3 py-2.5 rounded-xl text-xs font-bold min-h-[44px] transition-colors
@@ -140,35 +142,8 @@
 				onclick={handleDownload}
 				disabled={downloading}
 			>
-				{downloading ? 'Starting...' : 'Download'}
+				{downloading ? 'Starting downloads...' : `Download to ${connectedDevices.length} device${connectedDevices.length !== 1 ? 's' : ''}`}
 			</button>
 		</div>
-
-		<!-- Active Jobs -->
-		{#if dlJobs.length > 0 || distJobs.length > 0}
-			<div>
-				<h2 class="text-sm font-bold mb-2">Jobs</h2>
-				<div class="space-y-2">
-					{#each [...dlJobs, ...distJobs] as job (job.job_id)}
-						<div class="p-3 bg-surface border border-border rounded-lg">
-							<div class="flex items-center gap-2 mb-1.5">
-								<span class="text-xs truncate flex-1">{job.message || job.job_id}</span>
-								<span class="px-1.5 py-0.5 rounded text-[9px] font-bold {statusBadgeClass(job.status)}">{job.status}</span>
-							</div>
-							{#if job.status === 'running'}
-								<div class="w-full h-1.5 bg-border rounded-full overflow-hidden">
-									<div
-										class="h-full bg-primary rounded-full transition-all"
-										style="width: {Math.round(job.progress * 100)}%"
-									></div>
-								</div>
-								<div class="text-[9px] text-muted mt-1 text-right">{Math.round(job.progress * 100)}%</div>
-							{/if}
-						</div>
-					{/each}
-				</div>
-			</div>
-		{/if}
-
 	</div>
 </div>

@@ -3,7 +3,7 @@
 		getConversations,
 		getActiveConversationId,
 		getActiveConversation,
-		getRingStatus,
+		isRingActive,
 		getRingHealth,
 		isStreaming,
 		getStreamingContent,
@@ -11,6 +11,7 @@
 		setActiveConversation,
 		deleteConversation,
 		sendMessage,
+		stopStreaming,
 		setActiveTab,
 	} from '$lib/stores/app.svelte';
 	import { renderMarkdown } from '$lib/utils/markdown';
@@ -19,12 +20,10 @@
 	const conversations = $derived(getConversations());
 	const activeConvId = $derived(getActiveConversationId());
 	const activeConv = $derived(getActiveConversation());
-	const ring = $derived(getRingStatus());
+	const ringActive = $derived(isRingActive());
 	const health = $derived(getRingHealth());
 	const streaming = $derived(isStreaming());
 	const streamingContent = $derived(getStreamingContent());
-
-	const ringActive = $derived(ring.active);
 
 	let input = $state('');
 	let showDrawer = $state(false);
@@ -33,7 +32,6 @@
 
 	// Auto-scroll on new messages or streaming content
 	$effect(() => {
-		// Read these to establish dependency tracking
 		activeConv?.messages.length;
 		streamingContent;
 		tick().then(() => {
@@ -80,7 +78,6 @@
 <div class="h-full flex flex-col relative">
 	<!-- Header -->
 	<div class="shrink-0 flex items-center gap-2 px-3 py-2 border-b border-border bg-background/95 backdrop-blur min-h-[48px]">
-		<!-- Hamburger -->
 		<button
 			class="w-10 h-10 flex items-center justify-center rounded-lg active:bg-surface-hover"
 			onclick={() => showDrawer = !showDrawer}
@@ -90,16 +87,21 @@
 			</svg>
 		</button>
 
-		<!-- Conv name -->
 		<span class="flex-1 text-xs font-bold truncate">
 			{activeConv?.name ?? 'No conversation'}
 		</span>
 
-		<!-- New chat -->
-		<button
-			class="px-3 py-1.5 text-xs rounded-lg bg-primary/10 text-primary active:bg-primary/20 min-h-[36px]"
-			onclick={handleNewChat}
-		>+ New</button>
+		{#if streaming}
+			<button
+				class="px-3 py-1.5 text-xs rounded-lg bg-error/10 text-error active:bg-error/20 min-h-[36px]"
+				onclick={stopStreaming}
+			>Stop</button>
+		{:else}
+			<button
+				class="px-3 py-1.5 text-xs rounded-lg bg-primary/10 text-primary active:bg-primary/20 min-h-[36px]"
+				onclick={handleNewChat}
+			>+ New</button>
+		{/if}
 	</div>
 
 	<!-- Status banner -->
@@ -130,14 +132,12 @@
 		{:else}
 			{#each activeConv.messages as msg (msg.id)}
 				{#if msg.role === 'user'}
-					<!-- User bubble: right-aligned -->
 					<div class="flex justify-end">
 						<div class="max-w-[85%] px-3 py-2 rounded-2xl rounded-br-sm bg-primary text-background text-xs leading-relaxed break-words">
 							{msg.content}
 						</div>
 					</div>
 				{:else if msg.role === 'assistant'}
-					<!-- Assistant bubble: left-aligned -->
 					{@const isLastMsg = msg === activeConv.messages[activeConv.messages.length - 1]}
 					{@const displayContent = (streaming && isLastMsg) ? streamingContent : msg.content}
 					<div class="flex justify-start">
@@ -150,7 +150,6 @@
 									<span class="cursor-blink text-primary">&#9612;</span>
 								{/if}
 							</div>
-							<!-- Metrics -->
 							{#if msg.ttftMs !== undefined && !streaming}
 								<div class="text-[9px] text-muted mt-0.5 px-1">
 									TTFT {msg.ttftMs}ms &middot; {msg.tps?.toFixed(1)} tok/s
@@ -171,15 +170,16 @@
 				bind:value={input}
 				oninput={resizeTextarea}
 				onkeydown={handleKeydown}
-				placeholder="Message..."
+				placeholder={ringActive && health.ready ? 'Message...' : 'Start a ring first...'}
 				rows={1}
-				class="flex-1 bg-surface border border-border rounded-xl px-3 py-2.5 text-xs text-foreground resize-none min-h-[44px] max-h-[120px] outline-none focus:border-primary/50"
+				disabled={!ringActive || !health.ready}
+				class="flex-1 bg-surface border border-border rounded-xl px-3 py-2.5 text-xs text-foreground resize-none min-h-[44px] max-h-[120px] outline-none focus:border-primary/50 disabled:opacity-50"
 			></textarea>
 			<button
 				class="w-11 h-11 flex items-center justify-center rounded-xl transition-colors shrink-0
-					{input.trim() && !streaming ? 'bg-primary text-background active:bg-primary-dim' : 'bg-surface text-muted'}"
+					{input.trim() && !streaming && ringActive && health.ready ? 'bg-primary text-background active:bg-primary-dim' : 'bg-surface text-muted'}"
 				onclick={handleSend}
-				disabled={!input.trim() || streaming}
+				disabled={!input.trim() || streaming || !ringActive || !health.ready}
 			>
 				<svg class="w-5 h-5" viewBox="0 0 24 24" fill="currentColor">
 					<path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/>
@@ -190,14 +190,12 @@
 
 	<!-- Conversation drawer overlay -->
 	{#if showDrawer}
-		<!-- Backdrop -->
 		<button
 			class="absolute inset-0 bg-black/50 z-20"
 			onclick={() => showDrawer = false}
 			aria-label="Close drawer"
 		></button>
 
-		<!-- Drawer -->
 		<div class="absolute top-0 left-0 bottom-0 w-64 bg-background border-r border-border z-30 slide-in flex flex-col">
 			<div class="p-3 border-b border-border">
 				<h3 class="text-xs font-bold">Conversations</h3>

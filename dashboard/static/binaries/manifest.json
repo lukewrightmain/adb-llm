@@ -1,0 +1,14 @@
+{
+	"sm8350": {
+		"name": "Snapdragon 888",
+		"aliases": ["lahaina"],
+		"path": "sm8350/",
+		"binaries": [
+			"cellswarm-master",
+			"cellswarm-worker",
+			"cellswarm-worker-spec",
+			"cellswarm-agent"
+		],
+		"notes": "Galaxy Z Fold3, Galaxy S21 series. ARM v8.2-a + dotprod + fp16. NO i8mm."
+	}
+}

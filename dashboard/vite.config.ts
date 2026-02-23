@@ -4,10 +4,6 @@ import { defineConfig } from 'vite';
 
 export default defineConfig({
 	plugins: [tailwindcss(), sveltekit()],
-	server: {
-		proxy: {
-			'/api': 'http://localhost:8000',
-			'/v1': 'http://localhost:8000'
-		}
-	}
+	// No proxy config — all communication happens via WebUSB + ADB sockets
+	// directly in the browser. No backend server required.
 });
