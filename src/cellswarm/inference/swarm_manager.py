@@ -12,7 +12,7 @@ from cellswarm.core.errors import RpcServerError
 from cellswarm.transport.swarm_ring import RingNode, RingTopology
 from cellswarm.transport.ethernet_ring import EthernetRingNode, EthernetRingTopology
 from cellswarm.transport.usb_tether import TetherNode, TetherTopology
-from cellswarm.utils.adb import adb_shell
+from cellswarm.utils.adb import adb_shell, adb_shell_bg
 
 
 class SwarmManager:
@@ -68,7 +68,7 @@ class SwarmManager:
         # Use 4 threads to match the 4 big cores
         parts = [
             f"cd /data/local/tmp &&",
-            f"nohup taskset f0 {bin_path}",
+            f"taskset f0 {bin_path}",
             f"-m {model_path}",
             f"--world {topology.world_size}",
             f"--rank {node.rank}",
@@ -80,6 +80,7 @@ class SwarmManager:
             f"-c {context_size}",
             f"-t 4",
             f"-n -1",
+            "--no-mmap",
         ]
 
         if prefetch:
@@ -88,11 +89,12 @@ class SwarmManager:
         if act_quant == "fp16":
             parts.append("--act-quant fp16")
 
-        parts.append("> /data/local/tmp/swarm-worker.log 2>&1 &")
-
         cmd = " ".join(parts)
-        logger.debug("Starting cellswarm-worker on {}: {}", device.serial[:8], cmd)
-        await adb_shell(device.serial, cmd, check=False, timeout=10)
+        # Redirect stdout/stderr to log; adb_shell_bg wraps in sh -c '... &'
+        # and closes host-side stdin so ADB returns immediately
+        full_cmd = f"{cmd} > /data/local/tmp/swarm-worker.log 2>&1"
+        logger.debug("Starting cellswarm-worker on {}: {}", device.serial[:8], full_cmd)
+        await adb_shell_bg(device.serial, full_cmd)
 
         # Wait for it to come up
         for _ in range(SWARM_START_TIMEOUT):
@@ -139,7 +141,7 @@ class SwarmManager:
 
         parts = [
             f"cd /data/local/tmp &&",
-            f"nohup taskset f0 {bin_path}",
+            f"taskset f0 {bin_path}",
             f"-m {model_path}",
             f"--world {topology.world_size}",
             f"--rank {node.rank}",
@@ -151,6 +153,7 @@ class SwarmManager:
             f"-c {context_size}",
             f"-t 4",
             f"-n -1",
+            "--no-mmap",
         ]
 
         if prefetch:
@@ -159,11 +162,10 @@ class SwarmManager:
         if act_quant == "fp16":
             parts.append("--act-quant fp16")
 
-        parts.append("> /data/local/tmp/swarm-worker.log 2>&1 &")
-
         cmd = " ".join(parts)
-        logger.debug("Starting tethered cellswarm-worker on {}: {}", device.serial[:8], cmd)
-        await adb_shell(device.serial, cmd, check=False, timeout=10)
+        full_cmd = f"{cmd} > /data/local/tmp/swarm-worker.log 2>&1"
+        logger.debug("Starting tethered cellswarm-worker on {}: {}", device.serial[:8], full_cmd)
+        await adb_shell_bg(device.serial, full_cmd)
 
         for _ in range(SWARM_START_TIMEOUT):
             if await self.is_running(device):

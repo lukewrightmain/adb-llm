@@ -1,19 +1,20 @@
 #!/usr/bin/env bash
-# Benchmark cellswarm phone-only ring on ETHERNET phones — direct IP communication.
+# Benchmark cellswarm phone-only ring on ETHERNET phones — LIVE copy with online phones only.
 # No tunnels, no WinPC relay, no SSH. Phones talk directly at 10.105.0.x.
+# Copy of bench_cellswarm_ethernet.sh with ALL_PHONES limited to 17 currently online phones.
 #
 # Usage:
-#   ./scripts/bench_cellswarm_ethernet.sh 4                # 4-phone ring, Q4_K_M
-#   ./scripts/bench_cellswarm_ethernet.sh 5                # 5-phone ring
-#   ./scripts/bench_cellswarm_ethernet.sh 10               # 10-phone ring
-#   ./scripts/bench_cellswarm_ethernet.sh 20               # all 20 phones
-#   ./scripts/bench_cellswarm_ethernet.sh 5 --spec         # speculative decoding (draft-max=24)
-#   ./scripts/bench_cellswarm_ethernet.sh 5 --spec --draft-max 32  # custom draft-max
-#   ./scripts/bench_cellswarm_ethernet.sh 5 --sweep        # sweep 4,5,8,10,15,20
-#   ./scripts/bench_cellswarm_ethernet.sh 5 --spec-sweep   # sweep spec with draft-max 8,16,24,32
-#   ./scripts/bench_cellswarm_ethernet.sh 4 --spec --profile  # decode profiling timestamps
-#   ./scripts/bench_cellswarm_ethernet.sh 12 --master        # use cellswarm-master for rank 0
-#   MODEL=Q4_0 ./scripts/bench_cellswarm_ethernet.sh 5     # use Q4_0 model
+#   ./scripts/bench_cellswarm_ethernet_live.sh 11 --spec --draft-max 24 --seed 100 -n 128  # reproduce 6.1 tok/s
+#   ./scripts/bench_cellswarm_ethernet_live.sh 12 --spec --draft-max 24 --seed 100 -n 128  # production config
+#   ./scripts/bench_cellswarm_ethernet_live.sh 4                # 4-phone ring, Q4_K_M
+#   ./scripts/bench_cellswarm_ethernet_live.sh 10               # 10-phone ring
+#   ./scripts/bench_cellswarm_ethernet_live.sh 17               # all 17 online phones
+#   ./scripts/bench_cellswarm_ethernet_live.sh 5 --spec         # speculative decoding (draft-max=24)
+#   ./scripts/bench_cellswarm_ethernet_live.sh 5 --sweep        # sweep 4,5,8,10,15,17
+#   ./scripts/bench_cellswarm_ethernet_live.sh 5 --spec-sweep   # sweep spec with draft-max 8,16,24,32
+#   ./scripts/bench_cellswarm_ethernet_live.sh 4 --spec --profile  # decode profiling timestamps
+#   ./scripts/bench_cellswarm_ethernet_live.sh 12 --master        # use cellswarm-master for rank 0
+#   MODEL=Q4_0 ./scripts/bench_cellswarm_ethernet_live.sh 5     # use Q4_0 model
 #
 # Prerequisites:
 #   - adb at ~/.local/bin/adb, connected to ethernet phones
@@ -68,13 +69,8 @@ MODEL_QUANT="${MODEL:-Q4_K_M}"
 MODEL_REMOTE="/data/local/tmp/cellswarm/models/deepseek-coder-33b-instruct.${MODEL_QUANT}.gguf"
 DRAFT_REMOTE="/data/local/tmp/cellswarm/models/deepseek-coder-1.3b-instruct.Q4_K_M.gguf"
 
-# All 20 ethernet phones (ordered by IP)
+# 17 currently online ethernet phones (Feb 21, 2026)
 ALL_PHONES=(
-    10.105.0.41
-    10.105.0.42
-    10.105.0.44
-    10.105.0.45
-    10.105.0.48
     10.105.0.12
     10.105.0.13
     10.105.0.17
@@ -86,10 +82,12 @@ ALL_PHONES=(
     10.105.0.30
     10.105.0.31
     10.105.0.32
+    10.105.0.41
+    10.105.0.42
+    10.105.0.44
+    10.105.0.45
+    10.105.0.48
     10.105.0.156
-    10.105.0.36
-    10.105.0.38
-    10.105.0.40
 )
 
 TOTAL_LAYERS=62  # DeepSeek Coder 33B
@@ -458,7 +456,7 @@ elif $SWEEP_MODE; then
     echo " ETHERNET SWEEP — testing 4, 5, 8, 10, 15, 20 phones"
     echo "============================================"
     echo ""
-    for n in 4 5 8 10 15 20; do
+    for n in 4 5 8 10 12 15 17; do
         [ "$n" -le "${#ALL_PHONES[@]}" ] || continue
         run_benchmark "$n" "$SPEC_MODE"
         echo ""
@@ -467,7 +465,7 @@ elif $SWEEP_MODE; then
     echo ""
     echo "============================================"
     echo " SWEEP COMPLETE — check logs:"
-    for n in 4 5 8 10 15 20; do
+    for n in 4 5 8 10 12 15 17; do
         [ "$n" -le "${#ALL_PHONES[@]}" ] || continue
         suffix="${MODEL_QUANT}"
         $SPEC_MODE && suffix="spec-d${DRAFT_MAX}-${MODEL_QUANT}"

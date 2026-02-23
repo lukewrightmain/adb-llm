@@ -34,6 +34,13 @@ class AppState:
 
         self._monitor_task: asyncio.Task | None = None
         self._active_model: str | None = None
+        self._active_draft_model: str | None = None
+
+        # Ring launch tracking
+        self._launch_task: asyncio.Task | None = None
+        self._launch_status: str = "idle"  # idle, running, done, failed
+        self._launch_message: str = ""
+        self._launch_error: str | None = None
 
     async def startup(self) -> None:
         """Initial device discovery on server start."""

@@ -174,6 +174,41 @@ async def adb_devices() -> list[AdbDevice]:
     return devices
 
 
+async def adb_shell_bg(serial: str, cmd: str, timeout: float = 5) -> None:
+    """Launch a background command on a device. ADB returns immediately.
+
+    Uses ``sh -c '...cmd... &'`` so the Android shell forks the process and
+    returns, and ``stdin=DEVNULL`` on the host side so ADB doesn't keep the
+    session open waiting for input.  This matches the pattern used by the
+    working bench scripts.
+    """
+    wrapped = f"sh -c '{cmd} &'"
+    if _is_direct():
+        adb_bin = _cfg_adb_bin()
+        proc = await asyncio.create_subprocess_exec(
+            adb_bin, "-s", serial, "shell", wrapped,
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+    else:
+        ssh_host = _cfg_ssh_host()
+        remote_adb = _cfg_remote_adb_bin()
+        remote_cmd = f'{remote_adb} -s {serial} shell "{wrapped}"'
+        proc = await asyncio.create_subprocess_exec(
+            "ssh", "-o", "ConnectTimeout=10", ssh_host, remote_cmd,
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+    try:
+        await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.wait()
+        logger.warning("adb_shell_bg timed out on {} (may still be running)", serial[:8])
+
+
 async def adb_shell(serial: str, cmd: str, timeout: float = 30, check: bool = True) -> str:
     """Run a shell command on a device."""
     if _is_direct():

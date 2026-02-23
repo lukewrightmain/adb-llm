@@ -37,6 +37,7 @@ export interface RingStatus {
 	active: boolean;
 	world_size: number;
 	model: string | null;
+	draft_model: string | null;
 	nodes: RingNode[];
 }
 
@@ -81,4 +82,31 @@ export interface DeviceGroup {
 	name: string;
 	serials: string[];
 	createdAt: number;
+}
+
+export type TabId = 'devices' | 'ring' | 'chat' | 'models' | 'settings';
+
+export interface RingSettings {
+	speculative: boolean;
+	draftMax: number;
+	totalLayers: number;
+	contextSize: number;
+	prefetch: boolean;
+	defaultModel: string;
+	defaultDraftModel: string;
+}
+
+export interface RingHealth {
+	ready: boolean;
+	status: 'inactive' | 'loading' | 'ready';
+}
+
+export interface RingStartConfig {
+	model_path: string;
+	devices?: string;
+	total_layers?: number;
+	context_size?: number;
+	prefetch?: boolean;
+	draft_model_path?: string;
+	draft_max?: number;
 }

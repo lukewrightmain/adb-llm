@@ -4,8 +4,11 @@
 # Produces:
 #   bin/cellswarm-worker      (ARM64 Android - runs on phones)
 #   bin/cellswarm-worker-spec (ARM64 Android - speculative decoding, phone rank 0)
+#   bin/cellswarm-master      (ARM64 Android - HTTP server + ring master, runs on rank 0 phone)
+#   bin/cellswarm-agent       (ARM64 Android - process management daemon, all phones)
 #   bin/cellswarm-host        (x86_64 Linux  - runs on this server as rank 0)
 #   bin/cellswarm-host-spec   (x86_64 Linux  - speculative decoding host, rank 0)
+#   bin/cellswarm-server      (x86_64 Linux  - HTTP server with pipeline speculative decoding)
 #
 # Prerequisites:
 #   - CMake >= 3.14
@@ -366,7 +369,102 @@ else
     fi
 fi
 
+# ==========================================
+# Stage E: cellswarm-server (HTTP server with pipeline speculative decoding)
+# ==========================================
+echo ""
+echo ">>> Stage E: Building cellswarm-server (x86_64 Linux, HTTP server)..."
+
+# No make clean needed — object files from Stage D are reused (same host flags)
+make llama-server -j"$(nproc)" "${HOST_MAKE_FLAGS[@]}"
+
+if [ -f "$SWARM_DIR/llama-server" ]; then
+    cp "$SWARM_DIR/llama-server" "$OUTPUT_DIR/cellswarm-server"
+    echo "  cellswarm-server built: $OUTPUT_DIR/cellswarm-server"
+    file "$OUTPUT_DIR/cellswarm-server"
+else
+    FOUND=$(find "$SWARM_DIR" -name "llama-server" -type f 2>/dev/null | head -1)
+    if [ -n "$FOUND" ]; then
+        cp "$FOUND" "$OUTPUT_DIR/cellswarm-server"
+        echo "  cellswarm-server built: $OUTPUT_DIR/cellswarm-server"
+    else
+        echo "WARNING: llama-server binary not found — skipping cellswarm-server"
+    fi
+fi
+
 make clean 2>/dev/null || true
+
+# ==========================================
+# Stage F0: mdns-advertise for ARM64 Android
+# ==========================================
+echo ""
+echo ">>> Stage F0: Building mdns-advertise (ARM64 Android)..."
+
+"$CC_ANDROID" -O2 -march=armv8.2-a \
+    -o "$OUTPUT_DIR/mdns-advertise" \
+    "$PROJECT_DIR/tools/mdns-advertise.c" \
+    -Wl,--strip-all
+
+echo "  mdns-advertise built: $OUTPUT_DIR/mdns-advertise"
+file "$OUTPUT_DIR/mdns-advertise"
+
+# ==========================================
+# Stage F1: cellswarm-agent for ARM64 Android
+# ==========================================
+echo ""
+echo ">>> Stage F1: Building cellswarm-agent (ARM64 Android)..."
+
+"$CC_ANDROID" -O2 -march=armv8.2-a \
+    -o "$OUTPUT_DIR/cellswarm-agent" \
+    "$PROJECT_DIR/tools/cellswarm-agent.c" \
+    -Wl,--strip-all
+
+echo "  cellswarm-agent built: $OUTPUT_DIR/cellswarm-agent"
+file "$OUTPUT_DIR/cellswarm-agent"
+
+# ==========================================
+# Stage F: cellswarm-master for ARM64 Android (HTTP server + ring master)
+# ==========================================
+echo ""
+echo ">>> Stage F: Building cellswarm-master (ARM64 Android, HTTP server + ring master)..."
+
+cd "$SWARM_DIR"
+
+# Reuse ARM64 toolchain + libzmq from Stage A
+export CC="$CC_ANDROID"
+export CXX="$CXX_ANDROID"
+export AR="$AR_ANDROID"
+export RANLIB="$RANLIB_ANDROID"
+
+make llama-master -j"$(nproc)" \
+    CC="$CC_ANDROID" \
+    CXX="$CXX_ANDROID" \
+    AR="$AR_ANDROID" \
+    RANLIB="$RANLIB_ANDROID" \
+    UNAME_S=Linux \
+    UNAME_M=android_arm64 \
+    CFLAGS="-march=armv8.2-a+dotprod+fp16 -mcpu=cortex-a78 -Ofast -fno-finite-math-only -ffunction-sections -fdata-sections" \
+    CXXFLAGS="-march=armv8.2-a+dotprod+fp16 -mcpu=cortex-a78 -Ofast -fno-finite-math-only -ffunction-sections -fdata-sections" \
+    CPPFLAGS="${WORKER_CPPFLAGS} -DLLAMA_MASTER" \
+    LDFLAGS="${WORKER_LDFLAGS} -Wl,--gc-sections -Wl,--strip-all" \
+    GGML_NO_OPENMP=1
+
+if [ -f "$SWARM_DIR/llama-master" ]; then
+    cp "$SWARM_DIR/llama-master" "$OUTPUT_DIR/cellswarm-master"
+    echo "  cellswarm-master built: $OUTPUT_DIR/cellswarm-master"
+    file "$OUTPUT_DIR/cellswarm-master"
+else
+    FOUND=$(find "$SWARM_DIR" -name "llama-master" -type f 2>/dev/null | head -1)
+    if [ -n "$FOUND" ]; then
+        cp "$FOUND" "$OUTPUT_DIR/cellswarm-master"
+        echo "  cellswarm-master built: $OUTPUT_DIR/cellswarm-master"
+    else
+        echo "WARNING: llama-master binary not found — skipping cellswarm-master"
+    fi
+fi
+
+make clean 2>/dev/null || true
+unset CC CXX AR RANLIB
 
 echo ""
 echo "============================================"
@@ -374,8 +472,15 @@ echo " BUILD COMPLETE"
 echo "============================================"
 echo "  ARM64 worker:       $OUTPUT_DIR/cellswarm-worker"
 echo "  ARM64 worker-spec:  $OUTPUT_DIR/cellswarm-worker-spec"
+echo "  ARM64 master:       $OUTPUT_DIR/cellswarm-master"
+echo "  ARM64 mdns:         $OUTPUT_DIR/mdns-advertise"
+echo "  ARM64 agent:        $OUTPUT_DIR/cellswarm-agent"
 echo "  x86_64 host:        $OUTPUT_DIR/cellswarm-host"
 echo "  x86_64 host-spec:   $OUTPUT_DIR/cellswarm-host-spec"
+echo "  x86_64 server:      $OUTPUT_DIR/cellswarm-server"
 ls -lh "$OUTPUT_DIR/cellswarm-worker" "$OUTPUT_DIR/cellswarm-worker-spec" \
-       "$OUTPUT_DIR/cellswarm-host" "$OUTPUT_DIR/cellswarm-host-spec" 2>/dev/null || true
+       "$OUTPUT_DIR/cellswarm-master" "$OUTPUT_DIR/mdns-advertise" \
+       "$OUTPUT_DIR/cellswarm-agent" \
+       "$OUTPUT_DIR/cellswarm-host" "$OUTPUT_DIR/cellswarm-host-spec" \
+       "$OUTPUT_DIR/cellswarm-server" 2>/dev/null || true
 echo "============================================"

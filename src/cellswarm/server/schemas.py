@@ -53,6 +53,7 @@ class RingStatusResponse(BaseModel):
     active: bool
     world_size: int
     model: str | None = None
+    draft_model: str | None = None
     nodes: list[RingNodeResponse]
 
 
@@ -63,6 +64,8 @@ class RingStartRequest(BaseModel):
     context_size: int = 2048
     prefetch: bool = True
     port: int = 8080
+    draft_model_path: str | None = None
+    draft_max: int = 24
 
 
 class ModelFileResponse(BaseModel):

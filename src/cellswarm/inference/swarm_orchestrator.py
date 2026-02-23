@@ -20,6 +20,7 @@ from rich.console import Console
 
 from cellswarm.core.config import (
     DEFAULT_CONTEXT_SIZE,
+    MODELS_DIR,
     SWARM_SERVER_HOST,
     SWARM_SERVER_PORT,
     SWARM_DATA_PORT,
@@ -54,6 +55,7 @@ class SwarmOrchestrator:
         self.swarm_manager = SwarmManager()
         self.console = Console()
         self._host_process: asyncio.subprocess.Process | None = None
+        self._log_task: asyncio.Task | None = None
         self._use_ethernet = False
 
     async def start(
@@ -65,6 +67,8 @@ class SwarmOrchestrator:
         target_devices: str = "all",
         total_layers: int = 64,
         prefetch: bool = True,
+        draft_model_path: str | None = None,
+        draft_max: int = 24,
     ) -> None:
         """Full startup sequence for cellswarm pipeline inference."""
 
@@ -198,7 +202,12 @@ class SwarmOrchestrator:
             layer_window=layer_window,
             context_size=context_size,
             prefetch=prefetch,
+            draft_model_path=draft_model_path,
+            draft_max=draft_max,
         )
+
+        # Stream host stderr so logs are visible when start() is called via API
+        self._log_task = asyncio.create_task(self._stream_host_logs())
 
         self.console.print(
             f"\n[bold green]Ready![/] cellswarm pipeline inference active."
@@ -215,23 +224,40 @@ class SwarmOrchestrator:
         layer_window: list[int],
         context_size: int = 2048,
         prefetch: bool = True,
+        draft_model_path: str | None = None,
+        draft_max: int = 24,
     ) -> None:
-        """Start cellswarm-host (rank 0) on this Linux server."""
-        swarm_host_bin = shutil.which("cellswarm-host") or shutil.which("prima-host")
+        """Start cellswarm-server (rank 0) on this Linux server."""
+        # Resolve bare filenames to absolute paths via MODELS_DIR
+        if not os.path.isabs(model_path):
+            resolved = MODELS_DIR / model_path
+            if resolved.exists():
+                model_path = str(resolved)
+        if draft_model_path and not os.path.isabs(draft_model_path):
+            resolved = MODELS_DIR / draft_model_path
+            if resolved.exists():
+                draft_model_path = str(resolved)
+
+        # Prefer cellswarm-server (HTTP server with ring support), fall back to host-only binary
+        swarm_host_bin = (
+            shutil.which("cellswarm-server")
+            or shutil.which("cellswarm-host")
+            or shutil.which("prima-host")
+        )
         if not swarm_host_bin:
             # Check in project bin dir (try both new and legacy names)
             project_root = os.path.dirname(os.path.dirname(os.path.dirname(
                 os.path.dirname(os.path.abspath(__file__))
             )))
-            for name in ("cellswarm-host", "prima-host", "prima-host-spec"):
+            for name in ("cellswarm-server", "cellswarm-host", "prima-host", "prima-host-spec"):
                 candidate = os.path.join(project_root, "bin", name)
                 if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
                     swarm_host_bin = candidate
                     break
             if not swarm_host_bin:
                 raise InferenceError(
-                    "Host binary not found. Looking for cellswarm-host or prima-host.\n"
-                    "Build with: ./scripts/build_prima.sh"
+                    "Host binary not found. Looking for cellswarm-server, cellswarm-host, or prima-host.\n"
+                    "Build with: ./scripts/build_cellswarm.sh"
                 )
 
         if self._host_process and self._host_process.returncode is None:
@@ -265,6 +291,8 @@ class SwarmOrchestrator:
         args = [
             swarm_host_bin,
             "-m", model_path,
+            "--host", "0.0.0.0",
+            "--port", "8080",
             "--world", str(topology_size),
             "--rank", "0",
             "--master", master_ip,
@@ -273,11 +301,17 @@ class SwarmOrchestrator:
             "--signal-port", str(SWARM_SIGNAL_PORT),
             "-lw", lw_str,
             "-c", str(context_size),
+            "-t", "4",
+            "-tb", "4",
             "-n", "-1",
+            "--no-mmap",
         ]
 
         if prefetch:
             args.append("--prefetch")
+
+        if draft_model_path:
+            args.extend(["--model-draft", draft_model_path, "--draft-max", str(draft_max)])
 
         logger.info("Starting cellswarm-host: {}", " ".join(args))
 
@@ -289,7 +323,7 @@ class SwarmOrchestrator:
 
         # Wait briefly to check it didn't crash
         try:
-            await asyncio.wait_for(self._host_process.wait(), timeout=5)
+            await asyncio.wait_for(self._host_process.wait(), timeout=15)
             stderr = (await self._host_process.stderr.read()).decode(errors="replace")
             raise InferenceError(f"cellswarm-host exited immediately:\n{stderr[:1000]}")
         except asyncio.TimeoutError:
@@ -323,12 +357,9 @@ class SwarmOrchestrator:
         for sig in (signal.SIGINT, signal.SIGTERM):
             loop.add_signal_handler(sig, _signal_handler)
 
-        # Stream host logs while waiting
-        log_task = asyncio.create_task(self._stream_host_logs())
-
+        # Log streaming already started by start(); just wait for shutdown
         await stop_event.wait()
         await self.shutdown()
-        log_task.cancel()
 
     async def _stream_host_logs(self) -> None:
         """Stream cellswarm-host stderr to loguru."""
@@ -342,6 +373,11 @@ class SwarmOrchestrator:
     async def shutdown(self) -> None:
         """Clean shutdown of everything."""
         self.console.print("\n[bold]Shutting down cellswarm pipeline...[/]")
+
+        # Cancel log streaming
+        if self._log_task and not self._log_task.done():
+            self._log_task.cancel()
+            self._log_task = None
 
         # Stop host first
         await self._stop_host()
