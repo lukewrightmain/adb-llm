@@ -70,6 +70,12 @@ let streaming = $state(false);
 let streamingContent = $state('');
 let abortController = $state<AbortController | null>(null);
 
+// Live streaming stats (updated each token for real-time display)
+let streamingTokenCount = $state(0);
+let streamingStartTime = $state(0);
+let streamingTtftMs = $state(0);
+let streamingTps = $state(0);
+
 // Device selection & groups
 let selectedSerials = $state<Set<string>>(new Set());
 let deviceGroups = $state<DeviceGroup[]>([]);
@@ -101,6 +107,7 @@ const DEFAULT_SETTINGS: RingSettings = {
 	adbPath: '',
 	dataPort: 9100,
 	signalPort: 10100,
+	chatTemplate: '',
 };
 let settings = $state<RingSettings>({ ...DEFAULT_SETTINGS });
 
@@ -138,6 +145,7 @@ export function getConversations() { return conversations; }
 export function getActiveConversationId() { return activeConversationId; }
 export function isStreaming() { return streaming; }
 export function getStreamingContent() { return streamingContent; }
+export function getStreamingStats() { return { tokenCount: streamingTokenCount, ttftMs: streamingTtftMs, tps: streamingTps }; }
 export function getActiveTab() { return activeTab; }
 export function getGlobalError() { return globalError; }
 export function getIsRefreshing() { return isRefreshing; }
@@ -627,6 +635,8 @@ async function pollRingHealth() {
 			if (ready) {
 				log('pollRingHealth: ring READY, stopping health poll');
 				stopHealthPolling();
+				// Fetch the active chat template from the running master
+				fetchChatTemplate().catch(() => {});
 			}
 		} else {
 			logWarn('pollRingHealth: empty/failed response from proxy', result);
@@ -709,9 +719,58 @@ export async function handleStopRing() {
 		ringHealth = { ready: false, status: 'inactive' };
 		ringMasterDevice = null;
 		ringFormationProgress = null;
+		ringChatTemplate = null;
 		stopHealthPolling();
 		// Resume device polling after ring is stopped
 		startPolling();
+	}
+}
+
+// ─── Chat Template (runtime switching) ───────────────────────────────
+
+/** Current chat template on the running ring (null = unknown / ring not running) */
+let ringChatTemplate = $state<string | null>(null);
+
+export function getRingChatTemplate() { return ringChatTemplate; }
+
+/** Fetch current chat template from the running master */
+export async function fetchChatTemplate(): Promise<{ current: string; available: string[] } | null> {
+	if (!ringMasterDevice?.adb || !ringActive) return null;
+	const port = ringHttpPort ?? 8080;
+	try {
+		const resp = await adbFetch(ringMasterDevice.adb, '/api/chat-template', { port });
+		if (!resp.ok) return null;
+		const data = resp.json();
+		ringChatTemplate = data.current || '';
+		return data;
+	} catch (e) {
+		logErr('fetchChatTemplate error:', e);
+		return null;
+	}
+}
+
+/** Hot-swap chat template on the running master */
+export async function setChatTemplate(template: string): Promise<boolean> {
+	if (!ringMasterDevice?.adb || !ringActive) return false;
+	const port = ringHttpPort ?? 8080;
+	try {
+		const resp = await adbFetch(ringMasterDevice.adb, '/api/chat-template', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ chat_template: template }),
+			port,
+		});
+		if (!resp.ok) {
+			logErr('setChatTemplate failed:', resp.text);
+			return false;
+		}
+		const data = resp.json();
+		ringChatTemplate = data.chat_template || template;
+		log(`setChatTemplate: switched to "${ringChatTemplate}"`);
+		return true;
+	} catch (e) {
+		logErr('setChatTemplate error:', e);
+		return false;
 	}
 }
 
@@ -813,6 +872,10 @@ export async function sendMessage(content: string) {
 
 	streaming = true;
 	streamingContent = '';
+	streamingTokenCount = 0;
+	streamingTtftMs = 0;
+	streamingTps = 0;
+	streamingStartTime = Date.now();
 	const startTime = Date.now();
 	let tokenCount = 0;
 	let firstTokenTime = 0;
@@ -852,9 +915,16 @@ export async function sendMessage(content: string) {
 						.replace(/<\|end\|>/g, '')
 						.replace(/<\/s>/g, '');
 					if (clean) {
-						if (tokenCount === 0) firstTokenTime = Date.now() - startTime;
+						if (tokenCount === 0) {
+							firstTokenTime = Date.now() - startTime;
+							streamingTtftMs = firstTokenTime;
+						}
 						tokenCount++;
+						streamingTokenCount = tokenCount;
 						streamingContent += clean;
+						// Update live tok/s
+						const elapsed = (Date.now() - startTime) / 1000;
+						streamingTps = elapsed > 0 ? tokenCount / elapsed : 0;
 					}
 				}
 			} catch { /* skip malformed SSE */ }
@@ -881,6 +951,10 @@ export async function sendMessage(content: string) {
 		if (c) c.updatedAt = Date.now();
 		streaming = false;
 		streamingContent = '';
+		streamingTokenCount = 0;
+		streamingStartTime = 0;
+		streamingTtftMs = 0;
+		streamingTps = 0;
 		abortController = null;
 		conversations = [...conversations];
 		saveConversations();

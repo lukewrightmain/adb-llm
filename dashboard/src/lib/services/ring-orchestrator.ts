@@ -460,6 +460,7 @@ export async function startRing(
 		taskset,
 		prefetch,
 		httpPort,
+		chatTemplate: config.chatTemplate || undefined,
 	});
 
 	await resilientShell(devices[0].serial, masterCmd, 3);
@@ -544,6 +545,8 @@ interface MasterCmdParams extends WorkerCmdParams {
 	draftModelFullPath?: string;
 	draftMax: number;
 	httpPort: number;
+	/** Chat template name (e.g. "chatml") — omit for auto-detect */
+	chatTemplate?: string;
 }
 
 function buildMasterCommand(p: MasterCmdParams): string {
@@ -553,6 +556,8 @@ function buildMasterCommand(p: MasterCmdParams): string {
 	if (p.draftModelFullPath) {
 		draftFlags = `--model-draft ${p.draftModelFullPath} --draft-max ${p.draftMax} `;
 	}
+
+	const chatTemplateFlag = p.chatTemplate ? `--chat-template ${p.chatTemplate} ` : '';
 
 	// Subshell + setsid daemonize pattern (same as worker)
 	const innerCmd =
@@ -564,6 +569,7 @@ function buildMasterCommand(p: MasterCmdParams): string {
 		`--data-port ${p.dataPort} --signal-port ${p.signalPort} ` +
 		`-lw ${p.lw} -c ${p.contextSize} -t ${p.threads} -tb ${p.threads} ` +
 		`--no-mmap ${prefetchFlag} ` +
+		`${chatTemplateFlag}` +
 		`--host 0.0.0.0 --port ${p.httpPort} -np 1 ` +
 		`> /data/local/tmp/cellswarm-master.log 2>&1`;
 

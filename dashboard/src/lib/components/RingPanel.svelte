@@ -10,6 +10,8 @@
 		isRingForming,
 		getRingFormationProgress,
 		getRingMasterDevice,
+		getRingChatTemplate,
+		setChatTemplate,
 		toggleDeviceSelection,
 		selectAllDevices,
 		clearSelection,
@@ -20,6 +22,7 @@
 		refreshModels,
 	} from '$lib/stores/app.svelte';
 	import type { RingFormationConfig } from '$lib/types/adb';
+	import { CHAT_TEMPLATES } from '$lib/types';
 	import ProgressBar from './shared/ProgressBar.svelte';
 	import { onMount } from 'svelte';
 
@@ -50,11 +53,17 @@
 	let draftMax = $state(24);
 	let totalLayers = $state(62);
 	let contextSize = $state(2048);
+	let chatTemplate = $state('');
 	let starting = $state(false);
 	let stopping = $state(false);
 	let showDevicePicker = $state(false);
 	let error = $state('');
 	let initialized = $state(false);
+	let switchingTemplate = $state(false);
+	let templateSwitchResult = $state<string | null>(null);
+
+	const currentTemplate = $derived(getRingChatTemplate());
+	const chatTemplateDesc = $derived(CHAT_TEMPLATES.find(t => t.id === chatTemplate)?.description ?? '');
 
 	onMount(() => { if (!isRingForming()) refreshModels(); });
 
@@ -67,6 +76,7 @@
 			draftMax = ringSettings.draftMax;
 			totalLayers = ringSettings.totalLayers;
 			contextSize = ringSettings.contextSize;
+			chatTemplate = ringSettings.chatTemplate || '';
 			initialized = true;
 		}
 	});
@@ -92,6 +102,7 @@
 				dataPort: ringSettings.dataPort || 9100,
 				signalPort: ringSettings.signalPort || 10100,
 				adbPath: ringSettings.adbPath || undefined,
+				chatTemplate: chatTemplate || undefined,
 			};
 			await handleStartRing(config);
 		} catch (e) {
@@ -177,6 +188,19 @@
 					<input type="number" bind:value={contextSize} min={512} max={32768} step={512}
 						class="w-full bg-surface border border-border rounded-lg px-3 py-2.5 text-xs text-foreground min-h-[44px]" />
 				</div>
+			</div>
+
+			<!-- Chat Template -->
+			<div>
+				<label class="block text-xs text-muted mb-1">Chat Template</label>
+				<select bind:value={chatTemplate} class="w-full bg-surface border border-border rounded-lg px-3 py-2.5 text-xs text-foreground min-h-[44px]">
+					{#each CHAT_TEMPLATES as t}
+						<option value={t.id}>{t.name}</option>
+					{/each}
+				</select>
+				{#if chatTemplateDesc}
+					<p class="text-[10px] text-muted mt-1">{chatTemplateDesc}</p>
+				{/if}
 			</div>
 
 			<!-- Device picker -->
@@ -303,6 +327,47 @@
 					<div class="text-xs text-muted">
 						{masterDevice.info.model} &middot; {masterDevice.info.chipset}
 					</div>
+				</div>
+			{/if}
+
+			<!-- Chat Template (runtime switch) -->
+			{#if health.ready}
+				<div class="p-3 bg-surface rounded-lg border border-border space-y-2">
+					<div class="flex items-center justify-between">
+						<span class="text-xs font-bold text-foreground">Chat Template</span>
+						{#if currentTemplate !== null}
+							<span class="text-[10px] text-muted px-1.5 py-0.5 bg-background rounded">
+								{CHAT_TEMPLATES.find(t => t.id === currentTemplate)?.name || currentTemplate || 'Auto-detect'}
+							</span>
+						{/if}
+					</div>
+					<select
+						value={currentTemplate ?? ''}
+						onchange={async (e) => {
+							const newTmpl = (e.target as HTMLSelectElement).value;
+							switchingTemplate = true;
+							templateSwitchResult = null;
+							const ok = await setChatTemplate(newTmpl);
+							switchingTemplate = false;
+							templateSwitchResult = ok ? `Switched to ${CHAT_TEMPLATES.find(t => t.id === newTmpl)?.name || 'Auto-detect'}` : 'Failed to switch template';
+							if (ok) setTimeout(() => { templateSwitchResult = null; }, 4000);
+						}}
+						disabled={switchingTemplate}
+						class="w-full bg-background border border-border rounded-lg px-3 py-2.5 text-xs text-foreground min-h-[44px]"
+					>
+						{#each CHAT_TEMPLATES as t}
+							<option value={t.id}>{t.name} — {t.description}</option>
+						{/each}
+					</select>
+					{#if switchingTemplate}
+						<div class="flex items-center gap-2 text-[10px] text-muted">
+							<div class="w-2.5 h-2.5 border-2 border-current border-t-transparent rounded-full spinner"></div>
+							Switching...
+						</div>
+					{/if}
+					{#if templateSwitchResult}
+						<p class="text-[10px] {templateSwitchResult.startsWith('Failed') ? 'text-error' : 'text-success'}">{templateSwitchResult}</p>
+					{/if}
 				</div>
 			{/if}
 

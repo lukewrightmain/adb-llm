@@ -6,12 +6,14 @@
 	} from '$lib/stores/app.svelte';
 	import { setBatteryLevel, resetBattery, cleanRam } from '$lib/services/adb-shell';
 	import { cleanupOldSessions, configureProxy, testAdbPath, detectAdbPaths, getProxyConfig } from '$lib/services/ring-orchestrator';
+	import { CHAT_TEMPLATES } from '$lib/types';
 	import KeyManager from './KeyManager.svelte';
 	import { onMount } from 'svelte';
 
 	const settings = $derived(getSettings());
 	const devices = $derived(getManagedDevices());
 	const readyDevices = $derived(devices.filter(d => d.state === 'ready' && d.adb));
+	const chatTemplateDesc = $derived(CHAT_TEMPLATES.find(t => t.id === settings.chatTemplate)?.description ?? '');
 
 	// Get available models from first ready device
 	const availableModels = $derived(
@@ -245,6 +247,24 @@
 					<option value={m}>{m}</option>
 				{/each}
 			</select>
+		</div>
+
+		<!-- Chat Template -->
+		<div>
+			<label class="block text-xs text-muted mb-1" for="set-chat-template">Chat Template</label>
+			<select
+				id="set-chat-template"
+				value={settings.chatTemplate}
+				onchange={(e) => updateSettings({ chatTemplate: (e.target as HTMLSelectElement).value })}
+				class="w-full bg-surface border border-border rounded-lg px-3 py-2.5 text-xs text-foreground min-h-[44px]"
+			>
+				{#each CHAT_TEMPLATES as t}
+					<option value={t.id}>{t.name}</option>
+				{/each}
+			</select>
+			{#if chatTemplateDesc}
+				<p class="text-[10px] text-muted mt-1">{chatTemplateDesc}</p>
+			{/if}
 		</div>
 
 		<!-- Speculative Decoding -->

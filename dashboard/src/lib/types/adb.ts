@@ -112,6 +112,8 @@ export interface RingFormationConfig {
 	signalPort: number;
 	/** ADB binary path on the proxy server (optional — overrides proxy default) */
 	adbPath?: string;
+	/** Chat template name (e.g. "chatml", "deepseek") — blank = auto-detect from model */
+	chatTemplate?: string;
 }
 
 export type RingFormationPhase =

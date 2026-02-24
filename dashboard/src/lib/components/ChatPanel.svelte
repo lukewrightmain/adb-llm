@@ -7,6 +7,7 @@
 		getRingHealth,
 		isStreaming,
 		getStreamingContent,
+		getStreamingStats,
 		newConversation,
 		setActiveConversation,
 		deleteConversation,
@@ -24,6 +25,7 @@
 	const health = $derived(getRingHealth());
 	const streaming = $derived(isStreaming());
 	const streamingContent = $derived(getStreamingContent());
+	const streamStats = $derived(getStreamingStats());
 
 	let input = $state('');
 	let showDrawer = $state(false);
@@ -77,30 +79,46 @@
 
 <div class="h-full flex flex-col relative">
 	<!-- Header -->
-	<div class="shrink-0 flex items-center gap-2 px-3 py-2 border-b border-border bg-background/95 backdrop-blur min-h-[48px]">
-		<button
-			class="w-10 h-10 flex items-center justify-center rounded-lg active:bg-surface-hover"
-			onclick={() => showDrawer = !showDrawer}
-		>
-			<svg class="w-5 h-5 text-muted" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-				<path d="M4 6h16M4 12h16M4 18h16"/>
-			</svg>
-		</button>
-
-		<span class="flex-1 text-xs font-bold truncate">
-			{activeConv?.name ?? 'No conversation'}
-		</span>
-
-		{#if streaming}
+	<div class="shrink-0 border-b border-border bg-background/95 backdrop-blur">
+		<div class="flex items-center gap-2 px-3 py-2 min-h-[48px]">
 			<button
-				class="px-3 py-1.5 text-xs rounded-lg bg-error/10 text-error active:bg-error/20 min-h-[36px]"
-				onclick={stopStreaming}
-			>Stop</button>
-		{:else}
-			<button
-				class="px-3 py-1.5 text-xs rounded-lg bg-primary/10 text-primary active:bg-primary/20 min-h-[36px]"
-				onclick={handleNewChat}
-			>+ New</button>
+				class="w-10 h-10 flex items-center justify-center rounded-lg active:bg-surface-hover shrink-0"
+				onclick={() => showDrawer = !showDrawer}
+			>
+				<svg class="w-5 h-5 text-muted" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+					<path d="M4 6h16M4 12h16M4 18h16"/>
+				</svg>
+			</button>
+
+			<span class="flex-1 text-xs font-bold truncate">
+				{activeConv?.name ?? 'No conversation'}
+			</span>
+
+			{#if streaming}
+				<button
+					class="px-3 py-1.5 text-xs rounded-lg bg-error/10 text-error active:bg-error/20 min-h-[36px] shrink-0"
+					onclick={stopStreaming}
+				>Stop</button>
+			{:else}
+				<button
+					class="px-3 py-1.5 text-xs rounded-lg bg-primary/10 text-primary active:bg-primary/20 min-h-[36px] shrink-0"
+					onclick={handleNewChat}
+				>+ New</button>
+			{/if}
+		</div>
+
+		<!-- Live streaming stats bar -->
+		{#if streaming && streamStats.tokenCount > 0}
+			<div class="flex items-center gap-3 px-3 pb-2 -mt-0.5">
+				<div class="flex items-center gap-1.5">
+					<div class="w-2 h-2 rounded-full bg-success animate-pulse shrink-0"></div>
+					<span class="text-[11px] font-bold text-success">{streamStats.tps.toFixed(1)} tok/s</span>
+				</div>
+				<span class="text-[10px] text-muted">{streamStats.tokenCount} tokens</span>
+				{#if streamStats.ttftMs > 0}
+					<span class="text-[10px] text-muted">TTFT {streamStats.ttftMs}ms</span>
+				{/if}
+			</div>
 		{/if}
 	</div>
 
