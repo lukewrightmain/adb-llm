@@ -19,6 +19,7 @@ import {
 	getStorageFree,
 	getThermalTemp,
 	getIpAddress,
+	getBatteryLevel,
 	hasCellswarmBinaries,
 	hasSwarmProcess,
 	listModels,
@@ -40,6 +41,7 @@ export async function probeDevice(adb: Adb): Promise<DeviceInfo> {
 		storageFreeGb,
 		thermalTempC,
 		ipAddress,
+		batteryLevel,
 		hasBinaries,
 		hasSwarm,
 	] = await Promise.all([
@@ -54,6 +56,7 @@ export async function probeDevice(adb: Adb): Promise<DeviceInfo> {
 		getStorageFree(adb),
 		getThermalTemp(adb),
 		getIpAddress(adb),
+		getBatteryLevel(adb),
 		hasCellswarmBinaries(adb),
 		hasSwarmProcess(adb),
 	]);
@@ -74,6 +77,7 @@ export async function probeDevice(adb: Adb): Promise<DeviceInfo> {
 		usableRamMb: Math.max(0, mem.availableMb - 500), // Reserve 500MB for OS
 		storageFreeGb,
 		thermalTempC,
+		batteryLevel,
 		ipAddress,
 		hasBinaries,
 		hasSwarmProcess: hasSwarm,
@@ -105,9 +109,10 @@ export async function probeAllDevices(devices: ManagedDevice[]): Promise<Map<str
  * Quick refresh — only updates volatile data (RAM, thermal, processes).
  */
 export async function quickProbe(adb: Adb): Promise<Partial<DeviceInfo>> {
-	const [mem, thermalTempC, hasSwarm] = await Promise.all([
+	const [mem, thermalTempC, batteryLevel, hasSwarm] = await Promise.all([
 		getMemInfo(adb),
 		getThermalTemp(adb),
+		getBatteryLevel(adb),
 		hasSwarmProcess(adb),
 	]);
 
@@ -115,6 +120,7 @@ export async function quickProbe(adb: Adb): Promise<Partial<DeviceInfo>> {
 		availableRamMb: mem.availableMb,
 		usableRamMb: Math.max(0, mem.availableMb - 500),
 		thermalTempC,
+		batteryLevel,
 		hasSwarmProcess: hasSwarm,
 	};
 }

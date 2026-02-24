@@ -6,3 +6,13 @@ __pycache__/
 bin/
 build/
 *.gguf
+
+# Dashboard
+dashboard/node_modules/
+dashboard/.svelte-kit/
+dashboard/build/
+
+# ADB keys — NEVER commit these
+dashboard/static/keys/
+*.pem
+*.key

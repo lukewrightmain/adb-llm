@@ -94,6 +94,12 @@ export interface RingSettings {
 	prefetch: boolean;
 	defaultModel: string;
 	defaultDraftModel: string;
+	/** Path to ADB binary on the proxy server (e.g., /usr/bin/adb, ~/.local/bin/adb) */
+	adbPath: string;
+	/** Data port for ring ZMQ communication (default 9100) */
+	dataPort: number;
+	/** Signal port for ring ZMQ communication (default 10100) */
+	signalPort: number;
 }
 
 export interface RingHealth {

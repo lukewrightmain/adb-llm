@@ -2,40 +2,25 @@
  * ADB Shell Helpers — run commands and parse output via ADB.
  *
  * All functions take an Adb instance and return parsed results.
+ * Uses ya-webadb's subprocess.noneProtocol for shell commands.
  */
 
 import type { Adb } from '@yume-chan/adb';
 
 /**
  * Run a shell command on the device and return stdout as string.
+ * Uses the "none" protocol (legacy shell) which works on all Android versions.
  */
 export async function shellCmd(adb: Adb, cmd: string): Promise<string> {
-	const process = await adb.subprocess.spawn(cmd);
-	const chunks: string[] = [];
-	const reader = process.stdout.getReader();
-	const decoder = new TextDecoder();
-
-	try {
-		while (true) {
-			const { done, value } = await reader.read();
-			if (done) break;
-			chunks.push(decoder.decode(value, { stream: true }));
-		}
-	} finally {
-		reader.releaseLock();
-	}
-
-	// Wait for exit
-	await process.exit;
-
-	return chunks.join('').trim();
+	return adb.subprocess.noneProtocol.spawnWaitText(cmd);
 }
 
 /**
  * Get a system property via getprop.
  */
 export async function getprop(adb: Adb, prop: string): Promise<string> {
-	return shellCmd(adb, `getprop ${prop}`);
+	// Use Adb's built-in getProp which handles escaping
+	return adb.getProp(prop);
 }
 
 /**
@@ -164,6 +149,33 @@ export async function pkill(adb: Adb, name: string, signal = 9): Promise<void> {
 }
 
 /**
+ * Get battery level (0-100).
+ */
+export async function getBatteryLevel(adb: Adb): Promise<number> {
+	try {
+		const out = await shellCmd(adb, 'dumpsys battery | grep level');
+		const match = out.match(/level:\s*(\d+)/);
+		return match ? parseInt(match[1]) : 0;
+	} catch {
+		return 0;
+	}
+}
+
+/**
+ * Set battery level to a specific value via dumpsys.
+ */
+export async function setBatteryLevel(adb: Adb, level: number): Promise<void> {
+	await shellCmd(adb, `dumpsys battery set level ${level}`);
+}
+
+/**
+ * Reset battery stats to real values (undo any set level).
+ */
+export async function resetBattery(adb: Adb): Promise<void> {
+	await shellCmd(adb, 'dumpsys battery reset');
+}
+
+/**
  * Check if cellswarm binaries exist on device.
  */
 export async function hasCellswarmBinaries(adb: Adb): Promise<boolean> {
@@ -172,16 +184,109 @@ export async function hasCellswarmBinaries(adb: Adb): Promise<boolean> {
 }
 
 /**
- * List model files on device.
+ * List model files on device. Searches multiple directories and file types.
  */
 export async function listModels(adb: Adb): Promise<string[]> {
-	const out = await shellCmd(adb, 'ls /data/local/tmp/cellswarm/models/*.gguf 2>/dev/null || true');
+	const dirs = '/data/local/tmp/cellswarm/models /data/local/tmp/adb-llm/models /data/local/tmp/models';
+	const out = await shellCmd(adb, `find ${dirs} -maxdepth 1 \\( -name "*.gguf" -o -name "*.bin" -o -name "*.safetensors" \\) 2>/dev/null || true`);
 	if (!out) return [];
+	const seen = new Set<string>();
 	return out.split('\n')
 		.map(line => line.trim())
-		.filter(line => line.endsWith('.gguf'))
+		.filter(line => line.length > 0 && line.startsWith('/'))
 		.map(path => path.split('/').pop()!)
-		.filter(Boolean);
+		.filter(name => {
+			if (!name || seen.has(name)) return false;
+			seen.add(name);
+			return true;
+		});
+}
+
+/** Bloatware packages safe to force-stop */
+const BLOAT_PACKAGES = [
+	// Samsung
+	'com.samsung.android.game.gamehome',
+	'com.samsung.android.game.gametools',
+	'com.samsung.android.bixby.agent',
+	'com.samsung.android.bixby.service',
+	'com.samsung.android.visionintelligence',
+	'com.samsung.android.ardrawing',
+	'com.samsung.android.arzone',
+	'com.samsung.android.app.tips',
+	'com.samsung.android.app.reminder',
+	'com.samsung.android.calendar',
+	'com.samsung.android.email.provider',
+	'com.samsung.android.mobileservice',
+	'com.samsung.android.samsungpass',
+	'com.samsung.android.spay',
+	'com.samsung.android.forest',
+	'com.samsung.android.wellbeing',
+	'com.samsung.android.app.spage',
+	'com.samsung.android.app.news',
+	'com.samsung.android.themestore',
+	'com.samsung.android.app.dressroom',
+	'com.samsung.android.livestickers',
+	'com.samsung.android.stickercenter',
+	'com.samsung.android.app.routines',
+	'com.samsung.android.smartsuggestions',
+	// Google non-essential
+	'com.google.android.apps.magazines',
+	'com.google.android.apps.tachyon',
+	'com.google.android.apps.photos',
+	'com.google.android.apps.docs',
+	'com.google.android.apps.maps',
+	'com.google.android.youtube',
+	'com.google.android.music',
+	'com.google.android.videos',
+	'com.google.android.apps.youtube.music',
+	'com.google.android.gm',
+	'com.google.android.calendar',
+	'com.google.android.keep',
+	// Other common heavy apps
+	'com.facebook.katana',
+	'com.facebook.orca',
+	'com.instagram.android',
+	'com.whatsapp',
+	'com.spotify.music',
+	'com.netflix.mediaclient',
+	'com.twitter.android',
+	'com.snapchat.android',
+	'com.tiktok.android',
+];
+
+/**
+ * Safe RAM cleanup — kills background/cached apps and Samsung bloatware.
+ * Does NOT touch system-critical processes, cellswarm binaries, or ADB.
+ *
+ * Sends everything as a single shell command to avoid round-trip overhead.
+ * Returns freed MB (approximate, measured before/after).
+ */
+export async function cleanRam(adb: Adb): Promise<{ freedMb: number }> {
+	// Measure RAM before
+	const before = await getMemInfo(adb);
+
+	// Build one big shell script: kill-all + all force-stops + drop caches + trim
+	// Each command has its own error suppression so failures don't stop the chain
+	const forceStops = BLOAT_PACKAGES
+		.map(pkg => `am force-stop ${pkg}`)
+		.join('; ');
+
+	const script = [
+		'am kill-all',
+		forceStops,
+		'echo 3 > /proc/sys/vm/drop_caches',
+		'pm trim-caches 512M',
+	].join('; ');
+
+	// Run entire cleanup as single command with timeout wrapper
+	// timeout command kills it after 12s if it hangs on any package
+	await shellCmd(adb, `timeout 12 sh -c '${script.replace(/'/g, "'\\''")}' 2>/dev/null; echo DONE`);
+
+	// Measure RAM after
+	const after = await getMemInfo(adb);
+	const freedMb = Math.max(0, after.availableMb - before.availableMb);
+
+	return { freedMb };
 }
 
 /**

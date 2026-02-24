@@ -31,12 +31,22 @@ import {
 	connectDevice,
 	disconnectDevice,
 	createManagedDevice,
+	createTcpManagedDevice,
 	onUsbConnect,
 	onUsbDisconnect,
 } from '$lib/services/adb-manager';
+import {
+	connectTcpDevice,
+	saveTcpDevice,
+	removeTcpDevice,
+	loadTcpDevices,
+	isProxyAvailable,
+	scanNetwork,
+	type ScanProgress,
+} from '$lib/services/adb-tcp';
 import { probeDevice, quickProbe } from '$lib/services/device-prober';
-import { adbFetch, adbFetchSSE } from '$lib/services/adb-http';
-import { startRing as orchestrateRing, stopRing as orchestrateStopRing, killAllProcesses } from '$lib/services/ring-orchestrator';
+import { adbFetchSSE } from '$lib/services/adb-http';
+import { startRing as orchestrateRing, stopRing as orchestrateStopRing, killAllProcesses, configureProxy, findFreePorts } from '$lib/services/ring-orchestrator';
 import { scanModels, type ModelOnDevice } from '$lib/services/model-manager';
 import { listModels } from '$lib/services/adb-shell';
 
@@ -44,7 +54,9 @@ import { listModels } from '$lib/services/adb-shell';
 
 let managedDevices = $state<ManagedDevice[]>([]);
 let webUsbSupported = $state(false);
+let tcpProxyAvailable = $state(false);
 let ringActive = $state(false);
+let ringForming = $state(false);
 let ringHealth = $state<RingHealth>({ ready: false, status: 'inactive' });
 let ringFormationProgress = $state<RingFormationProgress | null>(null);
 let ringMasterDevice = $state<ManagedDevice | null>(null);
@@ -71,6 +83,10 @@ let activeTab = $state<TabId>('devices');
 let globalError = $state<string | null>(null);
 let isRefreshing = $state(false);
 
+// Network scan state
+let scanProgress = $state<ScanProgress | null>(null);
+let scanAbortController = $state<AbortController | null>(null);
+
 // Settings (persisted in localStorage)
 const DEFAULT_SETTINGS: RingSettings = {
 	speculative: true,
@@ -80,6 +96,9 @@ const DEFAULT_SETTINGS: RingSettings = {
 	prefetch: true,
 	defaultModel: '',
 	defaultDraftModel: '',
+	adbPath: '',
+	dataPort: 9100,
+	signalPort: 10100,
 };
 let settings = $state<RingSettings>({ ...DEFAULT_SETTINGS });
 
@@ -93,6 +112,12 @@ const SETTINGS_STORAGE_KEY = 'cellswarm-settings';
 const POLL_MS = 3000;
 const HEALTH_POLL_MS = 3000;
 
+// ─── Logging ──────────────────────────────────────────────────────────
+const LOG_PREFIX = '[CellSwarm]';
+function log(...args: unknown[]) { console.log(LOG_PREFIX, ...args); }
+function logWarn(...args: unknown[]) { console.warn(LOG_PREFIX, ...args); }
+function logErr(...args: unknown[]) { console.error(LOG_PREFIX, ...args); }
+
 // Event listener cleanup
 let cleanupUsbConnect: (() => void) | null = null;
 let cleanupUsbDisconnect: (() => void) | null = null;
@@ -101,7 +126,9 @@ let cleanupUsbDisconnect: (() => void) | null = null;
 
 export function getManagedDevices() { return managedDevices; }
 export function getWebUsbSupported() { return webUsbSupported; }
+export function getTcpProxyAvailable() { return tcpProxyAvailable; }
 export function isRingActive() { return ringActive; }
+export function isRingForming() { return ringForming; }
 export function getRingHealth() { return ringHealth; }
 export function getRingFormationProgress() { return ringFormationProgress; }
 export function getRingMasterDevice() { return ringMasterDevice; }
@@ -112,6 +139,8 @@ export function getStreamingContent() { return streamingContent; }
 export function getActiveTab() { return activeTab; }
 export function getGlobalError() { return globalError; }
 export function getIsRefreshing() { return isRefreshing; }
+export function getScanProgress() { return scanProgress; }
+export function isScanning() { return scanAbortController !== null; }
 export function getSelectedSerials() { return selectedSerials; }
 export function getDeviceGroups() { return deviceGroups; }
 export function getActiveGroupId() { return activeGroupId; }
@@ -229,37 +258,56 @@ export function loadGroup(id: string) {
 // ─── WebUSB Device Management ────────────────────────────────────────
 
 /**
- * Initialize WebUSB and try to reconnect to previously paired devices.
+ * Initialize WebUSB + TCP proxy and try to reconnect to previously paired devices.
  */
 export async function initWebUsb() {
 	webUsbSupported = isWebUsbSupported();
-	if (!webUsbSupported) return;
 
-	initUsbManager();
+	// Check TCP proxy availability (for ethernet/network ADB devices)
+	isProxyAvailable().then(available => {
+		tcpProxyAvailable = available;
 
-	// Listen for USB connect/disconnect events
-	cleanupUsbConnect = onUsbConnect(handleUsbConnect);
-	cleanupUsbDisconnect = onUsbDisconnect(handleUsbDisconnect);
+		// Auto-reconnect saved TCP devices
+		if (available) {
+			const savedTcpDevices = loadTcpDevices();
+			for (const entry of savedTcpDevices) {
+				const serial = `${entry.host}:${entry.port}`;
+				if (managedDevices.find(d => d.serial === serial)) continue;
 
-	// Try to reconnect to previously paired devices
-	const pairedDevices = await getPairedDevices();
-	for (const usbDevice of pairedDevices) {
-		const existing = managedDevices.find(d => d.usbDevice === usbDevice || d.serial === usbDevice.serialNumber);
-		if (existing) continue;
+				const managed = createTcpManagedDevice(entry.host, entry.port);
+				managedDevices = [...managedDevices, managed];
+				connectAndProbe(managed.serial).catch(() => {});
+			}
+		}
+	});
 
-		const managed = createManagedDevice(usbDevice);
-		managedDevices = [...managedDevices, managed];
-		// Auto-connect in background
-		connectAndProbe(managed.serial).catch(() => {});
+	if (webUsbSupported) {
+		initUsbManager();
+
+		// Listen for USB connect/disconnect events
+		cleanupUsbConnect = onUsbConnect(handleUsbConnect);
+		cleanupUsbDisconnect = onUsbDisconnect(handleUsbDisconnect);
+
+		// Try to reconnect to previously paired USB devices
+		const pairedDevices = await getPairedDevices();
+		for (const usbDevice of pairedDevices) {
+			const existing = managedDevices.find(d => d.usbDevice === usbDevice || d.serial === usbDevice.serialNumber);
+			if (existing) continue;
+
+			const managed = createManagedDevice(usbDevice);
+			managedDevices = [...managedDevices, managed];
+			connectAndProbe(managed.serial).catch(() => {});
+		}
 	}
 }
 
 /**
  * Request user to connect a new USB device (triggers browser permission dialog).
+ * Returns true if a device was added, false if user cancelled.
  */
-export async function addDevice() {
+export async function addDevice(): Promise<boolean> {
 	const usbDevice = await requestDevice();
-	if (!usbDevice) return; // User cancelled
+	if (!usbDevice) return false; // User cancelled
 
 	// Check if already tracked
 	const existing = managedDevices.find(d =>
@@ -270,29 +318,133 @@ export async function addDevice() {
 		if (!existing.adb) {
 			await connectAndProbe(existing.serial);
 		}
-		return;
+		return true;
 	}
 
 	const managed = createManagedDevice(usbDevice);
 	managedDevices = [...managedDevices, managed];
 	await connectAndProbe(managed.serial);
+	return true;
 }
 
 /**
- * Connect to a device and probe its info.
+ * Keep prompting for USB devices until the user cancels.
+ * Returns the number of devices added.
+ */
+export async function addMultipleDevices(): Promise<number> {
+	let count = 0;
+	while (true) {
+		const added = await addDevice();
+		if (!added) break; // User cancelled
+		count++;
+	}
+	return count;
+}
+
+/**
+ * Connect to a TCP/IP ADB device (ethernet phones, network ADB).
+ */
+export async function addTcpDevice(host: string, port: number = 5555) {
+	const serial = `${host}:${port}`;
+
+	// Check if already tracked
+	const existing = managedDevices.find(d => d.serial === serial);
+	if (existing) {
+		if (!existing.adb) {
+			await connectAndProbe(existing.serial);
+		}
+		return;
+	}
+
+	const managed = createTcpManagedDevice(host, port);
+	managedDevices = [...managedDevices, managed];
+
+	// Save for auto-reconnect
+	saveTcpDevice({ host, port });
+
+	await connectAndProbe(managed.serial);
+}
+
+/**
+ * Connect to multiple TCP/IP ADB devices at once.
+ */
+export async function addMultipleTcpDevices(entries: Array<{ host: string; port?: number }>) {
+	const promises = entries.map(e => addTcpDevice(e.host, e.port ?? 5555));
+	await Promise.allSettled(promises);
+}
+
+/**
+ * Scan a network range for ADB devices. Found devices are auto-added.
+ */
+export async function scanAndAddDevices(ips: string[], port: number = 5555) {
+	scanAbortController = new AbortController();
+	scanProgress = { type: 'start', total: ips.length, scanned: 0, found: 0 };
+
+	try {
+		const foundIps = await scanNetwork(ips, port, (event) => {
+			scanProgress = event;
+
+			// Auto-add found devices immediately
+			if (event.type === 'found' && event.ip) {
+				const serial = `${event.ip}:${port}`;
+				if (!managedDevices.find(d => d.serial === serial)) {
+					const managed = createTcpManagedDevice(event.ip, port);
+					managedDevices = [...managedDevices, managed];
+					saveTcpDevice({ host: event.ip, port });
+					connectAndProbe(managed.serial).catch(() => {});
+				}
+			}
+		}, scanAbortController.signal);
+
+		return foundIps;
+	} catch (e) {
+		if ((e as Error).name !== 'AbortError') {
+			globalError = `Scan failed: ${e instanceof Error ? e.message : e}`;
+		}
+		return [];
+	} finally {
+		scanAbortController = null;
+		// Keep progress visible briefly so user sees final result
+		setTimeout(() => { scanProgress = null; }, 5000);
+	}
+}
+
+/**
+ * Cancel an in-progress network scan.
+ */
+export function cancelScan() {
+	scanAbortController?.abort();
+}
+
+/**
+ * Connect to a device (USB or TCP) and probe its info.
  */
 async function connectAndProbe(serial: string) {
+	if (ringForming) {
+		log(`connectAndProbe(${serial}) BLOCKED — ringForming=true`);
+		return;
+	}
 	const idx = managedDevices.findIndex(d => d.serial === serial);
 	if (idx === -1) return;
 
+	log(`connectAndProbe(${serial}) starting`);
 	updateDeviceState(serial, 'connecting');
 
 	try {
 		const device = managedDevices[idx];
-		if (!device.usbDevice) throw new Error('No USB device reference');
+		let adb;
 
-		const adb = await connectDevice(device.usbDevice);
+		if (device.transport === 'tcp') {
+			if (!device.tcpHost) throw new Error('No TCP host configured');
+			log(`connectAndProbe(${serial}) connecting TCP ${device.tcpHost}:${device.tcpPort ?? 5555}`);
+			adb = await connectTcpDevice(device.tcpHost, device.tcpPort ?? 5555);
+		} else {
+			if (!device.usbDevice) throw new Error('No USB device reference');
+			log(`connectAndProbe(${serial}) connecting USB`);
+			adb = await connectDevice(device.usbDevice);
+		}
 
+		log(`connectAndProbe(${serial}) connected, probing...`);
 		// Update with ADB connection
 		managedDevices = managedDevices.map(d =>
 			d.serial === serial ? { ...d, adb, state: 'probing' as DeviceState } : d
@@ -307,8 +459,10 @@ async function connectAndProbe(serial: string) {
 				? { ...d, info, models, state: 'ready' as DeviceState, lastProbeAt: Date.now(), lastError: null }
 				: d
 		);
+		log(`connectAndProbe(${serial}) READY — ip=${info.ipAddress}`);
 	} catch (e) {
 		const errMsg = e instanceof Error ? e.message : String(e);
+		logErr(`connectAndProbe(${serial}) FAILED:`, errMsg);
 		managedDevices = managedDevices.map(d =>
 			d.serial === serial ? { ...d, state: 'error' as DeviceState, lastError: errMsg } : d
 		);
@@ -322,6 +476,7 @@ function updateDeviceState(serial: string, state: DeviceState) {
 }
 
 function handleUsbConnect(usbDevice: USBDevice) {
+	if (ringForming) { log(`handleUsbConnect BLOCKED — ringForming`); return; }
 	const serial = usbDevice.serialNumber;
 	if (!serial) return;
 
@@ -340,6 +495,7 @@ function handleUsbConnect(usbDevice: USBDevice) {
 }
 
 function handleUsbDisconnect(usbDevice: USBDevice) {
+	if (ringForming) { log(`handleUsbDisconnect BLOCKED — ringForming`); return; }
 	const serial = usbDevice.serialNumber;
 	if (!serial) return;
 
@@ -357,6 +513,7 @@ function handleUsbDisconnect(usbDevice: USBDevice) {
  * Refresh info for all connected devices.
  */
 export async function refreshAllDevices() {
+	if (ringForming) { log('refreshAllDevices BLOCKED — ringForming'); return; }
 	isRefreshing = true;
 	try {
 		await Promise.all(
@@ -386,8 +543,19 @@ export async function removeDevice(serial: string) {
 	if (device?.adb) {
 		await disconnectDevice(device.adb).catch(() => {});
 	}
+	// Remove TCP device from localStorage auto-reconnect list
+	if (device?.transport === 'tcp' && device.tcpHost) {
+		removeTcpDevice(device.tcpHost, device.tcpPort ?? 5555);
+	}
 	managedDevices = managedDevices.filter(d => d.serial !== serial);
 	selectedSerials = new Set([...selectedSerials].filter(s => s !== serial));
+}
+
+/**
+ * Reconnect a disconnected/errored device.
+ */
+export async function reconnectDevice(serial: string) {
+	await connectAndProbe(serial);
 }
 
 // ─── Polling ─────────────────────────────────────────────────────────
@@ -403,7 +571,8 @@ export function stopPolling() {
 }
 
 function startHealthPolling() {
-	if (healthInterval) return;
+	if (healthInterval) { log('startHealthPolling: already running'); return; }
+	log('startHealthPolling: starting', { masterSerial: ringMasterDevice?.serial, masterIp: ringMasterDevice?.info?.ipAddress });
 	pollRingHealth();
 	healthInterval = setInterval(pollRingHealth, HEALTH_POLL_MS);
 }
@@ -413,17 +582,48 @@ function stopHealthPolling() {
 }
 
 async function pollRingHealth() {
-	if (!ringMasterDevice?.adb) { stopHealthPolling(); return; }
+	if (!ringMasterDevice) {
+		log('pollRingHealth: no ringMasterDevice, stopping');
+		stopHealthPolling();
+		return;
+	}
+
+	const masterIp = ringMasterDevice.info?.ipAddress;
+	if (!masterIp) {
+		logWarn('pollRingHealth: ringMasterDevice has no ipAddress!', {
+			serial: ringMasterDevice.serial,
+			hasInfo: !!ringMasterDevice.info,
+			info: ringMasterDevice.info,
+		});
+		return;
+	}
+
+	const cmd = `curl -s http://${masterIp}:8080/api/ring 2>/dev/null`;
+	log(`pollRingHealth: proxy shell → ${ringMasterDevice.serial}: ${cmd}`);
 
 	try {
-		const resp = await adbFetch(ringMasterDevice.adb, '/api/ring', { port: 8080 });
-		if (resp.ok) {
-			const data = resp.json();
+		const resp = await fetch(`http://${location.hostname}:3002/shell`, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ serial: ringMasterDevice.serial, cmd }),
+		});
+		const result = await resp.json();
+		log('pollRingHealth: proxy response', { ok: result.ok, stdout: result.stdout?.slice(0, 200), stderr: result.stderr?.slice(0, 200) });
+
+		if (result.ok && result.stdout?.trim()) {
+			const data = JSON.parse(result.stdout.trim());
 			const ready = (data.n_world > 0 || data.world_size > 0);
+			log(`pollRingHealth: n_world=${data.n_world}, world_size=${data.world_size}, ready=${ready}`);
 			ringHealth = { ready, status: ready ? 'ready' : 'loading' };
-			if (ready) stopHealthPolling();
+			if (ready) {
+				log('pollRingHealth: ring READY, stopping health poll');
+				stopHealthPolling();
+			}
+		} else {
+			logWarn('pollRingHealth: empty/failed response from proxy', result);
 		}
-	} catch {
+	} catch (e) {
+		logErr('pollRingHealth: fetch error:', e);
 		ringHealth = { ready: false, status: 'loading' };
 	}
 }
@@ -431,41 +631,84 @@ async function pollRingHealth() {
 // ─── Ring ────────────────────────────────────────────────────────────
 
 export async function handleStartRing(config: RingFormationConfig) {
+	log('handleStartRing: BEGIN', { deviceCount: config.devices.length, masterSerial: config.devices[0]?.serial });
+
+	// CRITICAL: Block ALL background ADB access during ring formation.
+	ringForming = true;
+	stopPolling();
+	log('handleStartRing: ringForming=true, polling stopped');
+
+	// Disconnect ALL ya-webadb WebSocket connections.
+	// The ring orchestrator uses HTTP→proxy→adb (path #2), not WebUSB (path #1).
+	const connectedCount = managedDevices.filter(d => d.adb).length;
+	log(`handleStartRing: disconnecting ${connectedCount} ya-webadb connections`);
+	for (const d of managedDevices) {
+		if (d.adb) {
+			try { await disconnectDevice(d.adb); } catch { /* ignore */ }
+		}
+	}
+	managedDevices = managedDevices.map(d => ({
+		...d,
+		adb: null,
+		state: 'disconnected' as DeviceState,
+	}));
+	log('handleStartRing: all WS connections closed, devices set to disconnected');
+
 	try {
 		ringActive = true;
 		ringHealth = { ready: false, status: 'loading' };
-		ringMasterDevice = config.devices[0];
+		// Save the master device info (serial + device info for health polling).
+		// The ADB connection is null now — health polling uses the proxy, not ya-webadb.
+		ringMasterDevice = { ...config.devices[0], adb: null };
 		ringFormationProgress = null;
+		log('handleStartRing: calling orchestrateRing...');
 
 		await orchestrateRing(config, (progress) => {
+			log('handleStartRing: progress', progress.phase, progress.message);
 			ringFormationProgress = progress;
 		});
 
+		log('handleStartRing: orchestrateRing completed, starting health polling');
 		startHealthPolling();
 	} catch (e) {
+		logErr('handleStartRing: FAILED:', e);
 		ringActive = false;
 		ringHealth = { ready: false, status: 'inactive' };
 		ringFormationProgress = null;
 		globalError = `Ring start failed: ${e instanceof Error ? e.message : e}`;
+		startPolling();
 		throw e;
+	} finally {
+		ringForming = false;
+		log('handleStartRing: ringForming=false, reconnecting devices...');
+		// Reconnect all devices now that ring formation is done.
+		const serials = managedDevices.map(d => d.serial);
+		for (const serial of serials) {
+			connectAndProbe(serial).catch(() => {});
+		}
 	}
 }
 
 export async function handleStopRing() {
+	log('handleStopRing: BEGIN');
 	try {
 		await orchestrateStopRing(managedDevices);
-	} catch { /* ignore */ } finally {
+		log('handleStopRing: orchestrateStopRing completed');
+	} catch (e) { logErr('handleStopRing error:', e); } finally {
 		ringActive = false;
 		ringHealth = { ready: false, status: 'inactive' };
 		ringMasterDevice = null;
 		ringFormationProgress = null;
 		stopHealthPolling();
+		// Resume device polling after ring is stopped
+		startPolling();
 	}
 }
 
 // ─── Models ──────────────────────────────────────────────────────────
 
 export async function refreshModels() {
+	if (ringForming) { log('refreshModels BLOCKED — ringForming'); return; }
 	const connected = managedDevices.filter(d => d.adb);
 	for (const d of connected) {
 		try {
@@ -531,6 +774,10 @@ export function stopStreaming() {
 }
 
 export async function sendMessage(content: string) {
+	if (ringForming) {
+		globalError = 'Ring is being formed. Please wait.';
+		return;
+	}
 	if (!ringMasterDevice?.adb) {
 		globalError = 'No ring master connected. Start a ring first.';
 		return;
@@ -637,4 +884,8 @@ if (browser) {
 	loadConversations();
 	loadGroups();
 	loadSettings();
+	// Push saved ADB path to proxy on startup (proxy validates before accepting)
+	if (settings.adbPath) {
+		configureProxy(settings.adbPath).catch(() => {});
+	}
 }

@@ -4,6 +4,9 @@
 
 import type { Adb } from '@yume-chan/adb';
 
+/** How this device is connected */
+export type TransportType = 'usb' | 'tcp';
+
 export interface ManagedDevice {
 	/** ADB serial string (e.g. "10.105.0.12:5555" for ethernet, "R3CR904AQKA" for USB) */
 	serial: string;
@@ -11,8 +14,14 @@ export interface ManagedDevice {
 	shortSerial: string;
 	/** Live ADB connection (null when disconnected) */
 	adb: Adb | null;
-	/** USB device reference for reconnection */
+	/** USB device reference for reconnection (USB only) */
 	usbDevice: USBDevice | null;
+	/** Transport type: 'usb' or 'tcp' */
+	transport: TransportType;
+	/** TCP host (TCP only) */
+	tcpHost?: string;
+	/** TCP port (TCP only, default 5555) */
+	tcpPort?: number;
 	/** Connection state */
 	state: DeviceState;
 	/** Device info (populated after probing) */
@@ -45,6 +54,8 @@ export interface DeviceInfo {
 	usableRamMb: number;
 	storageFreeGb: number;
 	thermalTempC: number;
+	/** Battery level 0-100 */
+	batteryLevel: number;
 	/** IP address on network (for ring formation) */
 	ipAddress: string;
 	/** Whether cellswarm binaries exist on device */
@@ -99,6 +110,8 @@ export interface RingFormationConfig {
 	dataPort: number;
 	/** Signal port for ring communication */
 	signalPort: number;
+	/** ADB binary path on the proxy server (optional — overrides proxy default) */
+	adbPath?: string;
 }
 
 export type RingFormationPhase =

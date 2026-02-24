@@ -7,6 +7,7 @@
 		getSettings,
 		getRingHealth,
 		isRingActive,
+		isRingForming,
 		getRingFormationProgress,
 		getRingMasterDevice,
 		toggleDeviceSelection,
@@ -55,7 +56,7 @@
 	let error = $state('');
 	let initialized = $state(false);
 
-	onMount(() => { refreshModels(); });
+	onMount(() => { if (!isRingForming()) refreshModels(); });
 
 	// Sync form from settings once
 	$effect(() => {
@@ -88,8 +89,9 @@
 				taskset: 'f0',
 				prefetch: ringSettings.prefetch,
 				httpPort: 8080,
-				dataPort: 9000,
-				signalPort: 10000,
+				dataPort: ringSettings.dataPort || 9100,
+				signalPort: ringSettings.signalPort || 10100,
+				adbPath: ringSettings.adbPath || undefined,
 			};
 			await handleStartRing(config);
 		} catch (e) {

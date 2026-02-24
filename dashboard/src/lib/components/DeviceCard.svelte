@@ -24,6 +24,12 @@
 		if (temp > 38) return 'text-warning';
 		return 'text-muted';
 	}
+
+	function batteryColor(level: number): string {
+		if (level > 60) return 'text-success';
+		if (level > 20) return 'text-warning';
+		return 'text-error';
+	}
 </script>
 
 <button
@@ -53,6 +59,11 @@
 					'bg-muted'
 				}"></div>
 
+				<!-- Transport badge -->
+				<span class="px-1 py-0.5 rounded text-[9px] uppercase tracking-wider shrink-0 {
+					device.transport === 'tcp' ? 'bg-success/15 text-success' : 'bg-primary/15 text-primary'
+				}">{device.transport}</span>
+
 				<!-- Serial -->
 				<span class="text-xs font-bold truncate">{device.shortSerial}</span>
 
@@ -81,6 +92,11 @@
 						</div>
 						<span class="text-muted shrink-0">{ramPercent}%</span>
 					</div>
+
+					<!-- Battery -->
+					{#if info.batteryLevel > 0}
+						<span class="{batteryColor(info.batteryLevel)} shrink-0">{info.batteryLevel}%</span>
+					{/if}
 
 					<!-- Thermal -->
 					{#if info.thermalTempC > 0}

@@ -7,12 +7,8 @@
 
 import { Adb, AdbDaemonTransport } from '@yume-chan/adb';
 import { AdbDaemonWebUsbDeviceManager } from '@yume-chan/adb-daemon-webusb';
-import AdbWebCredentialStore from '@yume-chan/adb-credential-web';
 import type { ManagedDevice } from '$lib/types/adb';
-
-// Credential store persists RSA keys in IndexedDB so users don't have to
-// re-authorize on every page load.
-const credentialStore = new AdbWebCredentialStore();
+import { credentialStore } from '$lib/services/adb-keys';
 
 let usbManager: AdbDaemonWebUsbDeviceManager | undefined;
 
@@ -114,6 +110,29 @@ export function createManagedDevice(usbDevice: USBDevice): ManagedDevice {
 		shortSerial: serial.length > 12 ? serial.slice(-8) : serial,
 		adb: null,
 		usbDevice,
+		transport: 'usb',
+		state: 'disconnected',
+		info: null,
+		ringRank: null,
+		models: [],
+		lastError: null,
+		lastProbeAt: 0,
+	};
+}
+
+/**
+ * Create a ManagedDevice shell for a TCP/IP device (before ADB connect).
+ */
+export function createTcpManagedDevice(host: string, port: number = 5555): ManagedDevice {
+	const serial = `${host}:${port}`;
+	return {
+		serial,
+		shortSerial: host,
+		adb: null,
+		usbDevice: null,
+		transport: 'tcp',
+		tcpHost: host,
+		tcpPort: port,
 		state: 'disconnected',
 		info: null,
 		ringRank: null,

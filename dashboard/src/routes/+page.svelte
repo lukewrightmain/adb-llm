@@ -13,6 +13,7 @@
 		getManagedDevices,
 		getGlobalError,
 		getWebUsbSupported,
+		getTcpProxyAvailable,
 		dismissError,
 		initWebUsb,
 		startPolling,
@@ -28,9 +29,11 @@
 	const devices = $derived(getManagedDevices());
 	const globalError = $derived(getGlobalError());
 	const webUsbSupported = $derived(getWebUsbSupported());
+	const tcpProxyAvailable = $derived(getTcpProxyAvailable());
 
 	const readyCount = $derived(devices.filter(d => d.state === 'ready').length);
 	const hasDevices = $derived(devices.length > 0);
+	const hasAnyConnection = $derived(webUsbSupported || tcpProxyAvailable);
 
 	const tabs: { id: TabId; label: string; icon: string }[] = [
 		{ id: 'devices', label: 'Devices', icon: 'M12 18h.01M8 21h8a2 2 0 002-2V5a2 2 0 00-2-2H8a2 2 0 00-2 2v14a2 2 0 002 2z' },
@@ -51,10 +54,8 @@
 	});
 </script>
 
-<!-- Show setup wizard if no devices connected and WebUSB is available -->
-{#if !hasDevices && webUsbSupported}
-	<SetupWizard />
-{:else if !webUsbSupported}
+<!-- Show setup wizard when no devices connected -->
+{#if !hasDevices}
 	<SetupWizard />
 {:else}
 	<!-- Global error banner -->
