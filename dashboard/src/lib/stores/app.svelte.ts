@@ -118,6 +118,7 @@ let healthInterval: ReturnType<typeof setInterval> | null = null;
 const STORAGE_KEY = 'cellswarm-conversations';
 const GROUPS_STORAGE_KEY = 'cellswarm-device-groups';
 const SETTINGS_STORAGE_KEY = 'cellswarm-settings';
+const RING_STATE_STORAGE_KEY = 'cellswarm-ring-state';
 const POLL_MS = 3000;
 const HEALTH_POLL_MS = 3000;
 
@@ -193,6 +194,128 @@ function saveSettings() {
 export function updateSettings(partial: Partial<RingSettings>) {
 	settings = { ...settings, ...partial };
 	saveSettings();
+}
+
+// ─── Ring State Persistence ──────────────────────────────────────────
+
+interface PersistedRingState {
+	masterSerial: string;
+	masterIp: string;
+	httpPort: number;
+	/** Serials of all devices in the ring */
+	deviceSerials: string[];
+	startedAt: number;
+}
+
+function saveRingState() {
+	if (!browser || !ringMasterDevice) return;
+	const state: PersistedRingState = {
+		masterSerial: ringMasterDevice.serial,
+		masterIp: ringMasterDevice.info?.ipAddress?.trim() || '',
+		httpPort: ringHttpPort ?? 8080,
+		deviceSerials: managedDevices.filter(d => d.ringRank !== null).map(d => d.serial),
+		startedAt: Date.now(),
+	};
+	localStorage.setItem(RING_STATE_STORAGE_KEY, JSON.stringify(state));
+}
+
+function clearRingState() {
+	if (!browser) return;
+	localStorage.removeItem(RING_STATE_STORAGE_KEY);
+}
+
+function loadRingState(): PersistedRingState | null {
+	if (!browser) return null;
+	try {
+		const raw = localStorage.getItem(RING_STATE_STORAGE_KEY);
+		if (!raw) return null;
+		return JSON.parse(raw);
+	} catch { return null; }
+}
+
+/**
+ * On page load, check if a ring was running before refresh.
+ * Probe the master via the proxy — if still alive, restore ring state.
+ */
+async function tryResumeRing() {
+	const saved = loadRingState();
+	if (!saved || !saved.masterIp || !saved.masterSerial) {
+		clearRingState();
+		return;
+	}
+
+	log(`tryResumeRing: found saved ring state — master=${saved.masterSerial}, ip=${saved.masterIp}, port=${saved.httpPort}`);
+
+	// Probe the master's /api/ring endpoint via the proxy
+	try {
+		const cmd = `curl -s --connect-timeout 3 http://${saved.masterIp}:${saved.httpPort}/api/ring 2>/dev/null`;
+		const resp = await fetch(`http://${location.hostname}:3002/shell`, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ serial: saved.masterSerial, cmd }),
+		});
+		const result = await resp.json();
+
+		if (result.ok && result.stdout?.trim()) {
+			const data = JSON.parse(result.stdout.trim());
+			const ready = (data.n_world > 0 || data.world_size > 0);
+
+			if (ready) {
+				log(`tryResumeRing: ring STILL ALIVE — n_world=${data.n_world}, world_size=${data.world_size}`);
+
+				// Restore ring state
+				ringActive = true;
+				ringHttpPort = saved.httpPort;
+				ringHealth = { ready: true, status: 'ready' };
+
+				// Find the master device in managedDevices or create a placeholder
+				const masterDev = managedDevices.find(d => d.serial === saved.masterSerial);
+				if (masterDev) {
+					ringMasterDevice = { ...masterDev };
+				} else {
+					// Master device hasn't been reconnected yet — create minimal placeholder
+					const isIp = saved.masterSerial.includes(':');
+					ringMasterDevice = {
+						serial: saved.masterSerial,
+						shortSerial: saved.masterSerial.replace(':5555', ''),
+						adb: null,
+						usbDevice: null,
+						transport: isIp ? 'tcp' : 'usb',
+						tcpHost: isIp ? saved.masterSerial.split(':')[0] : undefined,
+						tcpPort: isIp ? parseInt(saved.masterSerial.split(':')[1]) || 5555 : undefined,
+						state: 'connecting',
+						info: { ipAddress: saved.masterIp } as any,
+						ringRank: 0,
+						models: [],
+						lastError: null,
+						lastProbeAt: 0,
+					};
+				}
+
+				// Restore ring ranks on devices
+				for (let i = 0; i < saved.deviceSerials.length; i++) {
+					managedDevices = managedDevices.map(d =>
+						d.serial === saved.deviceSerials[i]
+							? { ...d, ringRank: i }
+							: d
+					);
+				}
+
+				// Fetch chat template from running master
+				fetchChatTemplate().catch(() => {});
+
+				log('tryResumeRing: ring state RESTORED — ready to chat');
+				return;
+			}
+		}
+
+		// Ring is no longer running
+		log('tryResumeRing: ring is NOT running, clearing saved state');
+		clearRingState();
+	} catch (e) {
+		log(`tryResumeRing: probe failed (${e}), clearing saved state`);
+		clearRingState();
+	}
 }
 
 // ─── Error ───────────────────────────────────────────────────────────
@@ -274,7 +397,7 @@ export async function initWebUsb() {
 	webUsbSupported = isWebUsbSupported();
 
 	// Check TCP proxy availability (for ethernet/network ADB devices)
-	isProxyAvailable().then(available => {
+	isProxyAvailable().then(async (available) => {
 		tcpProxyAvailable = available;
 
 		// Auto-reconnect saved TCP devices
@@ -288,6 +411,11 @@ export async function initWebUsb() {
 				managedDevices = [...managedDevices, managed];
 				connectAndProbe(managed.serial).catch(() => {});
 			}
+
+			// Try to resume a ring that was running before the page was refreshed.
+			// The proxy can probe the master device directly — no need to wait for
+			// browser-side WebSocket connections to establish first.
+			await tryResumeRing();
 		}
 	});
 
@@ -635,6 +763,8 @@ async function pollRingHealth() {
 			if (ready) {
 				log('pollRingHealth: ring READY, stopping health poll');
 				stopHealthPolling();
+				// Persist ring state so we can resume after browser refresh
+				saveRingState();
 				// Fetch the active chat template from the running master
 				fetchChatTemplate().catch(() => {});
 			}
@@ -695,6 +825,7 @@ export async function handleStartRing(config: RingFormationConfig) {
 		ringActive = false;
 		ringHealth = { ready: false, status: 'inactive' };
 		ringFormationProgress = null;
+		clearRingState();
 		globalError = `Ring start failed: ${e instanceof Error ? e.message : e}`;
 		startPolling();
 		throw e;
@@ -720,6 +851,7 @@ export async function handleStopRing() {
 		ringMasterDevice = null;
 		ringFormationProgress = null;
 		ringChatTemplate = null;
+		clearRingState();
 		stopHealthPolling();
 		// Resume device polling after ring is stopped
 		startPolling();
