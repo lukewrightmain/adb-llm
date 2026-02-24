@@ -106,5 +106,14 @@ code, pre, .font-mono {
 .md-content h3 { font-size: 1em; }
 .md-content a { color: var(--color-primary); text-decoration: underline; }
 
+/* Mobile touch polish */
+button, select, input, a, [role="button"] {
+	touch-action: manipulation;
+}
+
+html {
+	scroll-behavior: smooth;
+}
+
 /* Safe area */
 .safe-bottom { padding-bottom: env(safe-area-inset-bottom, 0px); }

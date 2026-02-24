@@ -108,6 +108,16 @@ const DEFAULT_SETTINGS: RingSettings = {
 	dataPort: 9100,
 	signalPort: 10100,
 	chatTemplate: '',
+	seed: -1,
+	temperature: 0.7,
+	topK: 40,
+	topP: 0.9,
+	minP: 0.0,
+	repeatPenalty: 1.1,
+	repeatLastN: 64,
+	frequencyPenalty: 0.0,
+	presencePenalty: 0.0,
+	maxTokens: 2048,
 };
 let settings = $state<RingSettings>({ ...DEFAULT_SETTINGS });
 
@@ -1034,8 +1044,16 @@ export async function sendMessage(content: string) {
 				.filter((m) => m.role !== 'system' && m.id !== assistantMsgId)
 				.map((m) => ({ role: m.role, content: m.content })),
 			stream: true,
-			temperature: 0.7,
-			max_tokens: 2048,
+			temperature: settings.temperature,
+			top_k: settings.topK,
+			top_p: settings.topP,
+			min_p: settings.minP,
+			max_tokens: settings.maxTokens,
+			repeat_penalty: settings.repeatPenalty,
+			repeat_last_n: settings.repeatLastN,
+			frequency_penalty: settings.frequencyPenalty,
+			presence_penalty: settings.presencePenalty,
+			...(settings.seed >= 0 ? { seed: settings.seed } : {}),
 			stop: ['<|im_end|>', '<|end|>', '</s>'],
 		});
 

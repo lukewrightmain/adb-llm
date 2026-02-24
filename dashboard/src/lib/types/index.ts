@@ -113,6 +113,26 @@ export interface RingSettings {
 	signalPort: number;
 	/** Chat template name (e.g. "chatml", "deepseek", "llama3") */
 	chatTemplate: string;
+	/** Sampling: RNG seed (-1 = random) */
+	seed: number;
+	/** Sampling: temperature (0.0–2.0) */
+	temperature: number;
+	/** Sampling: top-K (0 = disabled) */
+	topK: number;
+	/** Sampling: top-P / nucleus (0.0–1.0) */
+	topP: number;
+	/** Sampling: min-P (0.0–1.0) */
+	minP: number;
+	/** Sampling: repeat penalty (0.0–2.0) */
+	repeatPenalty: number;
+	/** Sampling: repeat last N tokens for penalty */
+	repeatLastN: number;
+	/** Sampling: frequency penalty (0.0–2.0) */
+	frequencyPenalty: number;
+	/** Sampling: presence penalty (0.0–2.0) */
+	presencePenalty: number;
+	/** Max tokens to generate */
+	maxTokens: number;
 }
 
 /** Known chat templates supported by cellswarm-master */

@@ -20,6 +20,7 @@
 		handleStopRing,
 		setActiveTab,
 		refreshModels,
+		updateSettings,
 	} from '$lib/stores/app.svelte';
 	import type { RingFormationConfig } from '$lib/types/adb';
 	import { CHAT_TEMPLATES } from '$lib/types';
@@ -61,6 +62,7 @@
 	let initialized = $state(false);
 	let switchingTemplate = $state(false);
 	let templateSwitchResult = $state<string | null>(null);
+	let showSampling = $state(false);
 
 	const currentTemplate = $derived(getRingChatTemplate());
 	const chatTemplateDesc = $derived(CHAT_TEMPLATES.find(t => t.id === chatTemplate)?.description ?? '');
@@ -369,6 +371,102 @@
 					{/if}
 					{#if templateSwitchResult}
 						<p class="text-[10px] {templateSwitchResult.startsWith('Failed') ? 'text-error' : 'text-success'}">{templateSwitchResult}</p>
+					{/if}
+				</div>
+			{/if}
+
+			<!-- Sampling Controls (collapsible) -->
+			{#if health.ready}
+				<div class="p-3 bg-surface rounded-lg border border-border space-y-2">
+					<button
+						class="w-full flex items-center justify-between text-xs font-bold text-foreground min-h-[36px]"
+						onclick={() => showSampling = !showSampling}
+					>
+						<span>Sampling</span>
+						<svg class="w-4 h-4 text-muted transition-transform {showSampling ? 'rotate-180' : ''}" viewBox="0 0 20 20" fill="currentColor">
+							<path fill-rule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clip-rule="evenodd"/>
+						</svg>
+					</button>
+
+					{#if showSampling}
+						<div class="space-y-3 pt-1 fade-in">
+							<!-- Seed -->
+							<div>
+								<div class="flex items-center justify-between mb-1">
+									<label class="text-[10px] text-muted">Seed</label>
+									<span class="text-[10px] text-muted font-mono">{ringSettings.seed === -1 ? 'random' : ringSettings.seed}</span>
+								</div>
+								<input type="number" value={ringSettings.seed} min={-1} max={999999}
+									onchange={(e) => updateSettings({ seed: parseInt((e.target as HTMLInputElement).value) || -1 })}
+									class="w-full bg-background border border-border rounded-lg px-3 py-2 text-xs text-foreground min-h-[40px]"
+									placeholder="-1 = random" />
+							</div>
+
+							<!-- Temperature -->
+							<div>
+								<div class="flex items-center justify-between mb-1">
+									<label class="text-[10px] text-muted">Temperature</label>
+									<span class="text-[10px] text-muted font-mono">{ringSettings.temperature.toFixed(1)}</span>
+								</div>
+								<input type="range" min="0" max="2" step="0.1" value={ringSettings.temperature}
+									oninput={(e) => updateSettings({ temperature: parseFloat((e.target as HTMLInputElement).value) })}
+									class="w-full accent-primary" />
+							</div>
+
+							<!-- Top-K -->
+							<div>
+								<div class="flex items-center justify-between mb-1">
+									<label class="text-[10px] text-muted">Top-K</label>
+									<span class="text-[10px] text-muted font-mono">{ringSettings.topK}</span>
+								</div>
+								<input type="range" min="0" max="100" step="1" value={ringSettings.topK}
+									oninput={(e) => updateSettings({ topK: parseInt((e.target as HTMLInputElement).value) })}
+									class="w-full accent-primary" />
+							</div>
+
+							<!-- Top-P -->
+							<div>
+								<div class="flex items-center justify-between mb-1">
+									<label class="text-[10px] text-muted">Top-P</label>
+									<span class="text-[10px] text-muted font-mono">{ringSettings.topP.toFixed(2)}</span>
+								</div>
+								<input type="range" min="0" max="1" step="0.05" value={ringSettings.topP}
+									oninput={(e) => updateSettings({ topP: parseFloat((e.target as HTMLInputElement).value) })}
+									class="w-full accent-primary" />
+							</div>
+
+							<!-- Repeat Penalty -->
+							<div>
+								<div class="flex items-center justify-between mb-1">
+									<label class="text-[10px] text-muted">Repeat Penalty</label>
+									<span class="text-[10px] text-muted font-mono">{ringSettings.repeatPenalty.toFixed(1)}</span>
+								</div>
+								<input type="range" min="0" max="2" step="0.1" value={ringSettings.repeatPenalty}
+									oninput={(e) => updateSettings({ repeatPenalty: parseFloat((e.target as HTMLInputElement).value) })}
+									class="w-full accent-primary" />
+							</div>
+
+							<!-- Max Tokens -->
+							<div>
+								<div class="flex items-center justify-between mb-1">
+									<label class="text-[10px] text-muted">Max Tokens</label>
+									<span class="text-[10px] text-muted font-mono">{ringSettings.maxTokens}</span>
+								</div>
+								<input type="range" min="64" max="8192" step="64" value={ringSettings.maxTokens}
+									oninput={(e) => updateSettings({ maxTokens: parseInt((e.target as HTMLInputElement).value) })}
+									class="w-full accent-primary" />
+							</div>
+
+							<!-- Reset -->
+							<button
+								class="w-full py-2 rounded-lg text-[10px] text-muted border border-border active:bg-surface-hover min-h-[36px]"
+								onclick={() => updateSettings({
+									seed: -1, temperature: 0.7, topK: 40, topP: 0.9, minP: 0.0,
+									repeatPenalty: 1.1, repeatLastN: 64, frequencyPenalty: 0.0,
+									presencePenalty: 0.0, maxTokens: 2048,
+								})}
+							>Reset to Defaults</button>
+						</div>
 					{/if}
 				</div>
 			{/if}
