@@ -252,14 +252,16 @@ export async function connectTcpDevice(host: string, port: number = 5555): Promi
 		credentialStore,
 	});
 
+	let authTimeoutId: ReturnType<typeof setTimeout>;
 	const timeoutPromise = new Promise<never>((_, reject) => {
-		setTimeout(() => {
+		authTimeoutId = setTimeout(() => {
 			ws.close();
 			reject(new Error(`ADB authentication timeout for ${serial} (30s). Phone may not trust any imported keys — check "Always allow" on device.`));
 		}, 30000);
 	});
 
 	const transport = await Promise.race([authPromise, timeoutPromise]);
+	clearTimeout(authTimeoutId!); // FIX: Clear the 30s timeout so it doesn't close the WS later
 	console.log(`[adb-tcp] Authenticated ${serial} successfully`);
 
 	return new Adb(transport);

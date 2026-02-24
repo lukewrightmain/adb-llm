@@ -122,14 +122,16 @@ export async function getThermalTemp(adb: Adb): Promise<number> {
 export async function getIpAddress(adb: Adb): Promise<string> {
 	// Try wlan0 first, then eth0
 	let out = await shellCmd(adb, "ip addr show wlan0 2>/dev/null | grep 'inet ' | awk '{print $2}' | cut -d/ -f1");
-	if (out && out !== '') return out;
+	out = out.trim();
+	if (out) return out;
 
 	out = await shellCmd(adb, "ip addr show eth0 2>/dev/null | grep 'inet ' | awk '{print $2}' | cut -d/ -f1");
-	if (out && out !== '') return out;
+	out = out.trim();
+	if (out) return out;
 
 	// Fallback: getprop for DHCP
 	out = await shellCmd(adb, 'getprop dhcp.wlan0.ipaddress');
-	return out || '';
+	return out.trim() || '';
 }
 
 /**

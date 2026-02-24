@@ -67,6 +67,17 @@ export interface ChatMessage {
 	thinking?: string;
 	ttftMs?: number;
 	tps?: number;
+	/** Speculative decoding stats fetched from /api/spec after generation */
+	specStats?: SpecStats;
+}
+
+export interface SpecStats {
+	draftedTotal: number;
+	acceptedTotal: number;
+	acceptRatePct: number;
+	tokPerS: number;
+	specCycles: number;
+	tokensPredictedTotal: number;
 }
 
 export interface Conversation {

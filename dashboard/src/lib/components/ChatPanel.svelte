@@ -151,8 +151,14 @@
 								{/if}
 							</div>
 							{#if msg.ttftMs !== undefined && !streaming}
-								<div class="text-[9px] text-muted mt-0.5 px-1">
-									TTFT {msg.ttftMs}ms &middot; {msg.tps?.toFixed(1)} tok/s
+								<div class="text-[9px] text-muted mt-0.5 px-1 flex flex-wrap gap-x-1.5">
+									<span>TTFT {msg.ttftMs}ms</span>
+									<span>&middot; {msg.tps?.toFixed(1)} tok/s</span>
+									{#if msg.specStats}
+										<span>&middot; {msg.specStats.acceptRatePct.toFixed(0)}% accept</span>
+										<span>&middot; {msg.specStats.draftedTotal} drafted</span>
+										<span>&middot; {msg.specStats.acceptedTotal} accepted</span>
+									{/if}
 								</div>
 							{/if}
 						</div>

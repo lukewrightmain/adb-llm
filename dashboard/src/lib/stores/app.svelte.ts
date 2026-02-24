@@ -16,6 +16,7 @@ import type {
 	TabId,
 	RingHealth,
 	RingSettings,
+	SpecStats,
 } from '$lib/types';
 import type {
 	ManagedDevice,
@@ -45,7 +46,7 @@ import {
 	type ScanProgress,
 } from '$lib/services/adb-tcp';
 import { probeDevice, quickProbe } from '$lib/services/device-prober';
-import { adbFetchSSE } from '$lib/services/adb-http';
+import { adbFetch, adbFetchSSE } from '$lib/services/adb-http';
 import { startRing as orchestrateRing, stopRing as orchestrateStopRing, killAllProcesses, configureProxy, findFreePorts } from '$lib/services/ring-orchestrator';
 import { scanModels, type ModelOnDevice } from '$lib/services/model-manager';
 import { listModels } from '$lib/services/adb-shell';
@@ -60,6 +61,7 @@ let ringForming = $state(false);
 let ringHealth = $state<RingHealth>({ ready: false, status: 'inactive' });
 let ringFormationProgress = $state<RingFormationProgress | null>(null);
 let ringMasterDevice = $state<ManagedDevice | null>(null);
+let ringHttpPort = $state(8080);
 
 // Chat
 let conversations = $state<Conversation[]>([]);
@@ -459,6 +461,13 @@ async function connectAndProbe(serial: string) {
 				? { ...d, info, models, state: 'ready' as DeviceState, lastProbeAt: Date.now(), lastError: null }
 				: d
 		);
+
+		// Keep ringMasterDevice in sync so health polling + chat work after reconnect
+		if (ringMasterDevice && serial === ringMasterDevice.serial) {
+			ringMasterDevice = { ...ringMasterDevice, adb, info };
+			log(`connectAndProbe(${serial}) synced ringMasterDevice — ip=${info.ipAddress}, adb=${!!adb}`);
+		}
+
 		log(`connectAndProbe(${serial}) READY — ip=${info.ipAddress}`);
 	} catch (e) {
 		const errMsg = e instanceof Error ? e.message : String(e);
@@ -588,7 +597,7 @@ async function pollRingHealth() {
 		return;
 	}
 
-	const masterIp = ringMasterDevice.info?.ipAddress;
+	const masterIp = ringMasterDevice.info?.ipAddress?.trim();
 	if (!masterIp) {
 		logWarn('pollRingHealth: ringMasterDevice has no ipAddress!', {
 			serial: ringMasterDevice.serial,
@@ -598,7 +607,7 @@ async function pollRingHealth() {
 		return;
 	}
 
-	const cmd = `curl -s http://${masterIp}:8080/api/ring 2>/dev/null`;
+	const cmd = `curl -s http://${masterIp}:${ringHttpPort}/api/ring 2>/dev/null`;
 	log(`pollRingHealth: proxy shell → ${ringMasterDevice.serial}: ${cmd}`);
 
 	try {
@@ -660,6 +669,7 @@ export async function handleStartRing(config: RingFormationConfig) {
 		// Save the master device info (serial + device info for health polling).
 		// The ADB connection is null now — health polling uses the proxy, not ya-webadb.
 		ringMasterDevice = { ...config.devices[0], adb: null };
+		ringHttpPort = config.httpPort;
 		ringFormationProgress = null;
 		log('handleStartRing: calling orchestrateRing...');
 
@@ -809,6 +819,8 @@ export async function sendMessage(content: string) {
 
 	abortController = new AbortController();
 
+	const port = ringHttpPort ?? 8080;
+
 	try {
 		const body = JSON.stringify({
 			messages: conv.messages
@@ -817,13 +829,14 @@ export async function sendMessage(content: string) {
 			stream: true,
 			temperature: 0.7,
 			max_tokens: 2048,
+			stop: ['<|im_end|>', '<|end|>', '</s>'],
 		});
 
 		const sseStream = adbFetchSSE(ringMasterDevice.adb!, '/v1/chat/completions', {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },
 			body,
-			port: 8080,
+			port,
 			signal: abortController.signal,
 		});
 
@@ -832,9 +845,17 @@ export async function sendMessage(content: string) {
 				const parsed = JSON.parse(data);
 				const delta = parsed.choices?.[0]?.delta?.content;
 				if (delta) {
-					if (tokenCount === 0) firstTokenTime = Date.now() - startTime;
-					tokenCount++;
-					streamingContent += delta;
+					// Strip raw special tokens that may leak from the model
+					const clean = delta
+						.replace(/<\|im_end\|>/g, '')
+						.replace(/<\|im_start\|>/g, '')
+						.replace(/<\|end\|>/g, '')
+						.replace(/<\/s>/g, '');
+					if (clean) {
+						if (tokenCount === 0) firstTokenTime = Date.now() - startTime;
+						tokenCount++;
+						streamingContent += clean;
+					}
 				}
 			} catch { /* skip malformed SSE */ }
 		}
@@ -847,7 +868,10 @@ export async function sendMessage(content: string) {
 		const c = conversations.find((c) => c.id === activeConversationId);
 		const msg = c?.messages.find((m) => m.id === assistantMsgId);
 		if (msg) {
-			if (streamingContent) msg.content = streamingContent;
+			// Clean any trailing special tokens from final content
+			if (streamingContent) {
+				msg.content = streamingContent.replace(/<\|im_end\|>/g, '').replace(/<\|im_start\|>[\s\S]*/g, '').trim();
+			}
 			if (tokenCount > 0) {
 				msg.ttftMs = firstTokenTime;
 				const elapsed = (Date.now() - startTime) / 1000;
@@ -860,6 +884,40 @@ export async function sendMessage(content: string) {
 		abortController = null;
 		conversations = [...conversations];
 		saveConversations();
+
+		// Fetch speculative decoding stats from /api/spec (non-blocking)
+		if (ringMasterDevice?.adb && tokenCount > 0) {
+			fetchSpecStats(ringMasterDevice.adb, port, assistantMsgId).catch(() => {});
+		}
+	}
+}
+
+/** Fetch speculative decoding stats from the master device's /api/spec endpoint */
+async function fetchSpecStats(adb: import('@yume-chan/adb').Adb, port: number, msgId: string) {
+	try {
+		const resp = await adbFetch(adb, '/api/spec', { port });
+		if (!resp.ok) return;
+		const data = resp.json();
+		const stats: SpecStats = {
+			draftedTotal: data.n_drafted_total ?? 0,
+			acceptedTotal: data.n_accepted_total ?? 0,
+			acceptRatePct: data.accept_rate_pct ?? 0,
+			tokPerS: data.tok_per_s ?? 0,
+			specCycles: data.n_spec_cycles ?? 0,
+			tokensPredictedTotal: data.n_tokens_predicted_total ?? 0,
+		};
+		// Update the message with spec stats
+		const conv = conversations.find((c) => c.id === activeConversationId);
+		const msg = conv?.messages.find((m) => m.id === msgId);
+		if (msg) {
+			msg.specStats = stats;
+			// Use server-side tok/s if available (more accurate)
+			if (stats.tokPerS > 0) msg.tps = stats.tokPerS;
+			conversations = [...conversations];
+			saveConversations();
+		}
+	} catch {
+		// Spec stats are best-effort, don't fail the chat
 	}
 }
 

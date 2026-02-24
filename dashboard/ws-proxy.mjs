@@ -315,8 +315,14 @@ function handleAdbBridge(ws, pathname) {
 
 	ws.on('pong', () => { missedPongs = 0; });
 
-	ws.on('close', () => { clearInterval(pingTimer); tcp.destroy(); });
-	ws.on('error', () => { clearInterval(pingTimer); tcp.destroy(); });
+	ws.on('close', (code, reason) => {
+		clearInterval(pingTimer);
+		tcp.destroy();
+	});
+	ws.on('error', (err) => {
+		clearInterval(pingTimer);
+		tcp.destroy();
+	});
 }
 
 // ─── Network Scanner ──────────────────────────────────────────────────
