@@ -208,12 +208,7 @@ interface PersistedRingState {
 }
 
 function saveRingState() {
-	if (!browser || !ringMasterDevice) {
-		// #region agent log
-		fetch('http://localhost:7242/ingest/24243a52-54ed-4498-8aef-86fb790002b5',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'app.svelte.ts:saveRingState',message:'SKIPPED — no browser or no ringMasterDevice',data:{browser:typeof window!=='undefined',hasRingMasterDevice:!!ringMasterDevice},timestamp:Date.now(),hypothesisId:'H-A'})}).catch(()=>{});
-		// #endregion
-		return;
-	}
+	if (!browser || !ringMasterDevice) return;
 	const state: PersistedRingState = {
 		masterSerial: ringMasterDevice.serial,
 		masterIp: ringMasterDevice.info?.ipAddress?.trim() || '',
@@ -221,9 +216,6 @@ function saveRingState() {
 		deviceSerials: managedDevices.filter(d => d.ringRank !== null).map(d => d.serial),
 		startedAt: Date.now(),
 	};
-	// #region agent log
-	fetch('http://localhost:7242/ingest/24243a52-54ed-4498-8aef-86fb790002b5',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'app.svelte.ts:saveRingState',message:'SAVING ring state',data:state,timestamp:Date.now(),hypothesisId:'H-A'})}).catch(()=>{});
-	// #endregion
 	localStorage.setItem(RING_STATE_STORAGE_KEY, JSON.stringify(state));
 }
 
@@ -247,13 +239,7 @@ function loadRingState(): PersistedRingState | null {
  */
 async function tryResumeRing() {
 	const saved = loadRingState();
-	// #region agent log
-	fetch('http://localhost:7242/ingest/24243a52-54ed-4498-8aef-86fb790002b5',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'app.svelte.ts:tryResumeRing',message:'START',data:{hasSaved:!!saved,saved},timestamp:Date.now(),hypothesisId:'H-B'})}).catch(()=>{});
-	// #endregion
 	if (!saved || !saved.masterIp || !saved.masterSerial) {
-		// #region agent log
-		fetch('http://localhost:7242/ingest/24243a52-54ed-4498-8aef-86fb790002b5',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'app.svelte.ts:tryResumeRing',message:'NO saved state — nothing to resume',data:{saved},timestamp:Date.now(),hypothesisId:'H-D'})}).catch(()=>{});
-		// #endregion
 		clearRingState();
 		return;
 	}
@@ -263,19 +249,12 @@ async function tryResumeRing() {
 	// Probe the master's /api/ring endpoint via the proxy
 	try {
 		const cmd = `curl -s --connect-timeout 3 http://${saved.masterIp}:${saved.httpPort}/api/ring 2>/dev/null`;
-		// #region agent log
-		fetch('http://localhost:7242/ingest/24243a52-54ed-4498-8aef-86fb790002b5',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'app.svelte.ts:tryResumeRing',message:'probing master',data:{cmd,serial:saved.masterSerial,proxyUrl:`http://${location.hostname}:3002/shell`},timestamp:Date.now(),hypothesisId:'H-C'})}).catch(()=>{});
-		// #endregion
 		const resp = await fetch(`http://${location.hostname}:3002/shell`, {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },
 			body: JSON.stringify({ serial: saved.masterSerial, cmd }),
 		});
 		const result = await resp.json();
-
-		// #region agent log
-		fetch('http://localhost:7242/ingest/24243a52-54ed-4498-8aef-86fb790002b5',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'app.svelte.ts:tryResumeRing',message:'probe result',data:{ok:result.ok,stdout:result.stdout?.slice(0,300),stderr:result.stderr?.slice(0,200)},timestamp:Date.now(),hypothesisId:'H-C'})}).catch(()=>{});
-		// #endregion
 
 		if (result.ok && result.stdout?.trim()) {
 			const data = JSON.parse(result.stdout.trim());
@@ -440,9 +419,6 @@ export async function initWebUsb() {
 			// Try to resume a ring that was running before the page was refreshed.
 			// The proxy can probe the master device directly — no need to wait for
 			// browser-side WebSocket connections to establish first.
-			// #region agent log
-			fetch('http://localhost:7242/ingest/24243a52-54ed-4498-8aef-86fb790002b5',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'app.svelte.ts:initWebUsb',message:'about to call tryResumeRing',data:{tcpProxyAvailable:available,nManagedDevices:managedDevices.length},timestamp:Date.now(),hypothesisId:'H-B'})}).catch(()=>{});
-			// #endregion
 			await tryResumeRing();
 		}
 	});
@@ -800,9 +776,6 @@ async function pollRingHealth() {
 				log('pollRingHealth: ring READY, stopping health poll');
 				stopHealthPolling();
 				// Persist ring state so we can resume after browser refresh
-				// #region agent log
-				fetch('http://localhost:7242/ingest/24243a52-54ed-4498-8aef-86fb790002b5',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'app.svelte.ts:pollRingHealth',message:'ring READY — about to saveRingState',data:{masterSerial:ringMasterDevice?.serial,masterIp:ringMasterDevice?.info?.ipAddress,hasAdb:!!ringMasterDevice?.adb,httpPort:ringHttpPort,nDevicesWithRank:managedDevices.filter(d=>d.ringRank!==null).length},timestamp:Date.now(),hypothesisId:'H-A'})}).catch(()=>{});
-				// #endregion
 				saveRingState();
 				// Fetch the active chat template from the running master
 				fetchChatTemplate().catch(() => {});
