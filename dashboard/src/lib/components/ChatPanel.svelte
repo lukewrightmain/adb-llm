@@ -133,7 +133,7 @@
 	{:else if !health.ready}
 		<div class="px-3 py-2 bg-warning/10 text-warning text-[10px] border-b border-warning/20 flex items-center gap-2">
 			<div class="w-3 h-3 border-2 border-warning border-t-transparent rounded-full spinner shrink-0"></div>
-			Model loading... you can send messages once ready.
+			{health.status === 'reconnecting' ? 'Reconnecting to ring... please wait.' : 'Model loading... you can send messages once ready.'}
 		</div>
 	{/if}
 

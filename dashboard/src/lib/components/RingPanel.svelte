@@ -306,9 +306,11 @@
 				<div class="p-3 rounded-xl bg-warning/10 border border-warning/20">
 					<div class="flex items-center gap-2 mb-1">
 						<div class="w-3 h-3 border-2 border-warning border-t-transparent rounded-full spinner"></div>
-						<span class="text-sm font-bold text-warning">Loading</span>
+						<span class="text-sm font-bold text-warning">{health.status === 'reconnecting' ? 'Reconnecting' : 'Loading'}</span>
 					</div>
-					{#if progress}
+					{#if health.status === 'reconnecting'}
+						<p class="text-[10px] text-muted">Ring is running — reconnecting to devices...</p>
+					{:else if progress}
 						<p class="text-[10px] text-muted mb-2">{progress.message}</p>
 						<ProgressBar progress={progress.progress} />
 					{:else}
