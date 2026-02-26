@@ -25,6 +25,7 @@ CTX_SIZE=2048
 THREADS=4
 TASKSET="f0"
 DEPLOY=false
+OVERLAP_DRAFT=0
 EXTRA_FLAGS=""
 
 shift || true
@@ -36,6 +37,7 @@ while [ $# -gt 0 ]; do
         -t)           shift; THREADS="$1" ;;
         --taskset)    shift; TASKSET="$1" ;;
         --deploy)     DEPLOY=true ;;
+        --overlap)    OVERLAP_DRAFT=1 ;;
         --extra)      shift; EXTRA_FLAGS="$1" ;;
         *)            echo "Unknown flag: $1"; exit 1 ;;
     esac
@@ -46,19 +48,36 @@ ADB="$HOME/.local/bin/adb"
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 BIN_DIR="$PROJECT_DIR/bin"
 
-MODEL_QUANT="${MODEL:-Q4_K_M}"
-MODEL_REMOTE="/data/local/tmp/cellswarm/models/deepseek-coder-33b-instruct.${MODEL_QUANT}.gguf"
-DRAFT_REMOTE="/data/local/tmp/cellswarm/models/deepseek-coder-1.3b-instruct.Q4_K_M.gguf"
+MODEL_QUANT="${MODEL_QUANT:-Q4_K_M}"
 
-TOTAL_LAYERS=62
+# Model family: "deepseek" (default) or "qwen2.5"
+MODEL_FAMILY="${MODEL_FAMILY:-deepseek}"
+
+if [ "$MODEL_FAMILY" = "qwen2.5" ] || [ "$MODEL_FAMILY" = "qwen" ]; then
+    MODEL_REMOTE="/data/local/tmp/cellswarm/models/Qwen2.5-Coder-32B-Instruct-Q4_K_M.gguf"
+    DRAFT_REMOTE="/data/local/tmp/cellswarm/models/Qwen2.5-Coder-1.5B-Instruct-Q4_K_M.gguf"
+    TOTAL_LAYERS=64
+elif [ "$MODEL_FAMILY" = "qwen3.5-moe" ]; then
+    # Qwen3.5-35B-A3B: MoE — 35B total, 3B active, 256 experts, 40 layers
+    MODEL_REMOTE="/data/local/tmp/cellswarm/models/Qwen3.5-35B-A3B-Q4_K_M.gguf"
+    DRAFT_REMOTE="/data/local/tmp/cellswarm/models/Qwen2.5-1.5B-Instruct-Q4_K_M.gguf"
+    TOTAL_LAYERS=40
+else
+    MODEL_REMOTE="/data/local/tmp/cellswarm/models/deepseek-coder-33b-instruct.${MODEL_QUANT}.gguf"
+    DRAFT_REMOTE="/data/local/tmp/cellswarm/models/deepseek-coder-1.3b-instruct.Q4_K_M.gguf"
+    TOTAL_LAYERS=62
+fi
+
+# Allow full override via env
+MODEL_REMOTE="${MODEL_PATH:-$MODEL_REMOTE}"
+DRAFT_REMOTE="${DRAFT_PATH:-$DRAFT_REMOTE}"
+TOTAL_LAYERS="${TOTAL_LAYERS_OVERRIDE:-$TOTAL_LAYERS}"
 DATA_PORT=9000
 SIGNAL_PORT=10000
 
-# All 20 ethernet phones
+# All 20 ethernet phones (ordered: model-ready first, then others)
 ALL_PHONES=(
     10.105.0.41
-    10.105.0.42
-    10.105.0.44
     10.105.0.45
     10.105.0.48
     10.105.0.12
@@ -76,6 +95,8 @@ ALL_PHONES=(
     10.105.0.36
     10.105.0.38
     10.105.0.40
+    10.105.0.42
+    10.105.0.44
 )
 
 PHONES=("${ALL_PHONES[@]:0:$N_PHONES}")
@@ -223,7 +244,7 @@ echo ""
 echo "Starting cellswarm-master on $RANK0_IP (rank 0, next=$NEXT_IP)..."
 adb_shell "$RANK0_IP" "sh -c '
 cd /data/local/tmp
-SWARM_BATCH_PIPELINE=1 taskset $TASKSET ./cellswarm/bin/cellswarm-master \
+SWARM_BATCH_PIPELINE=1 SWARM_OVERLAP_DRAFT=$OVERLAP_DRAFT taskset $TASKSET ./cellswarm/bin/cellswarm-master \
   -m $MODEL_REMOTE \
   --model-draft $DRAFT_REMOTE \
   --draft-max $DRAFT_MAX \

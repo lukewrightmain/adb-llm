@@ -76,6 +76,9 @@ let streamingStartTime = $state(0);
 let streamingTtftMs = $state(0);
 let streamingTps = $state(0);
 
+// Worker profiling stats (fetched from /api/workers after each generation)
+let workerStats = $state<import('$lib/types').WorkerStats[]>([]);
+
 // Device selection & groups
 let selectedSerials = $state<Set<string>>(new Set());
 let deviceGroups = $state<DeviceGroup[]>([]);
@@ -167,6 +170,7 @@ export function getDeviceGroups() { return deviceGroups; }
 export function getActiveGroupId() { return activeGroupId; }
 export function getSettings() { return settings; }
 export function getDeviceModels() { return deviceModels; }
+export function getWorkerStats() { return workerStats; }
 
 export function getActiveConversation(): Conversation | undefined {
 	return conversations.find((c) => c.id === activeConversationId);
@@ -1121,9 +1125,10 @@ export async function sendMessage(content: string) {
 		conversations = [...conversations];
 		saveConversations();
 
-		// Fetch speculative decoding stats from /api/spec (non-blocking)
+		// Fetch speculative decoding stats and worker profiling (non-blocking)
 		if (ringMasterDevice?.adb && tokenCount > 0) {
 			fetchSpecStats(ringMasterDevice.adb, port, assistantMsgId).catch(() => {});
+			fetchWorkerStats(ringMasterDevice.adb, port).catch(() => {});
 		}
 	}
 }
@@ -1141,6 +1146,8 @@ async function fetchSpecStats(adb: import('@yume-chan/adb').Adb, port: number, m
 			tokPerS: data.tok_per_s ?? 0,
 			specCycles: data.n_spec_cycles ?? 0,
 			tokensPredictedTotal: data.n_tokens_predicted_total ?? 0,
+			currentNDraft: data.current_n_draft,
+			rollingAcceptRate: data.rolling_accept_rate,
 		};
 		// Update the message with spec stats
 		const conv = conversations.find((c) => c.id === activeConversationId);
@@ -1154,6 +1161,27 @@ async function fetchSpecStats(adb: import('@yume-chan/adb').Adb, port: number, m
 		}
 	} catch {
 		// Spec stats are best-effort, don't fail the chat
+	}
+}
+
+/** Fetch per-worker recv timing stats from /api/workers */
+async function fetchWorkerStats(adb: import('@yume-chan/adb').Adb, port: number) {
+	try {
+		const resp = await adbFetch(adb, '/api/workers', { port });
+		if (!resp.ok) return;
+		const data = resp.json();
+		const workers = data.workers ?? [];
+		workerStats = workers.map((w: Record<string, number>) => ({
+			rank: w.rank ?? 0,
+			avgMs: w.avg_ms ?? 0,
+			minMs: w.min_ms ?? 0,
+			maxMs: w.max_ms ?? 0,
+			nCycles: w.n_cycles ?? 0,
+			score: w.score ?? 0,
+			stdMs: w.std_ms ?? 0,
+		}));
+	} catch {
+		// Worker stats are best-effort
 	}
 }
 

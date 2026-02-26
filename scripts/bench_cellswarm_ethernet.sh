@@ -65,12 +65,28 @@ ADB="$HOME/.local/bin/adb"
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 
 MODEL_QUANT="${MODEL:-Q4_K_M}"
-MODEL_REMOTE="/data/local/tmp/cellswarm/models/deepseek-coder-33b-instruct.${MODEL_QUANT}.gguf"
-DRAFT_REMOTE="/data/local/tmp/cellswarm/models/deepseek-coder-1.3b-instruct.Q4_K_M.gguf"
+MODEL_FAMILY="${MODEL_FAMILY:-deepseek}"
 
-# All 20 ethernet phones (ordered by IP)
+if [ "$MODEL_FAMILY" = "qwen2.5" ] || [ "$MODEL_FAMILY" = "qwen" ]; then
+    MODEL_REMOTE="/data/local/tmp/cellswarm/models/Qwen2.5-Coder-32B-Instruct-Q4_K_M.gguf"
+    DRAFT_REMOTE="/data/local/tmp/cellswarm/models/Qwen2.5-Coder-1.5B-Instruct-Q4_K_M.gguf"
+    TOTAL_LAYERS=64
+else
+    MODEL_REMOTE="/data/local/tmp/cellswarm/models/deepseek-coder-33b-instruct.${MODEL_QUANT}.gguf"
+    DRAFT_REMOTE="/data/local/tmp/cellswarm/models/deepseek-coder-1.3b-instruct.Q4_K_M.gguf"
+    TOTAL_LAYERS=62
+fi
+
+# All ethernet phones — reachable phones first, then others
+# Updated 2026-02-25: 7 phones online (.41,.20,.29,.30,.31,.32,.156)
 ALL_PHONES=(
     10.105.0.41
+    10.105.0.20
+    10.105.0.29
+    10.105.0.30
+    10.105.0.31
+    10.105.0.32
+    10.105.0.156
     10.105.0.42
     10.105.0.44
     10.105.0.45
@@ -79,20 +95,14 @@ ALL_PHONES=(
     10.105.0.13
     10.105.0.17
     10.105.0.19
-    10.105.0.20
     10.105.0.24
     10.105.0.28
-    10.105.0.29
-    10.105.0.30
-    10.105.0.31
-    10.105.0.32
-    10.105.0.156
     10.105.0.36
     10.105.0.38
     10.105.0.40
 )
 
-TOTAL_LAYERS=62  # DeepSeek Coder 33B
+# TOTAL_LAYERS set above based on MODEL_FAMILY
 DATA_PORT=9000
 SIGNAL_PORT=10000
 

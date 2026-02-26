@@ -176,6 +176,9 @@
 										<span>&middot; {msg.specStats.acceptRatePct.toFixed(0)}% accept</span>
 										<span>&middot; {msg.specStats.draftedTotal} drafted</span>
 										<span>&middot; {msg.specStats.acceptedTotal} accepted</span>
+										{#if msg.specStats.currentNDraft !== undefined}
+											<span>&middot; d{msg.specStats.currentNDraft}</span>
+										{/if}
 									{/if}
 								</div>
 							{/if}

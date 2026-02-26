@@ -11,6 +11,7 @@
 		getRingFormationProgress,
 		getRingMasterDevice,
 		getRingChatTemplate,
+		getWorkerStats,
 		setChatTemplate,
 		toggleDeviceSelection,
 		selectAllDevices,
@@ -36,6 +37,10 @@
 	const active = $derived(isRingActive());
 	const progress = $derived(getRingFormationProgress());
 	const masterDevice = $derived(getRingMasterDevice());
+
+	const workers = $derived(getWorkerStats());
+	const sortedWorkers = $derived([...workers].sort((a, b) => b.score - a.score));
+	const maxWorkerAvg = $derived(Math.max(...workers.map(w => w.avgMs), 1));
 
 	const readyDevices = $derived(devices.filter(d => d.state === 'ready'));
 	const selectedDevices = $derived(
@@ -491,6 +496,32 @@
 					</div>
 				{/each}
 			</div>
+
+			<!-- Worker Performance -->
+			{#if sortedWorkers.length > 0}
+				<div class="space-y-1.5">
+					<h3 class="text-xs text-muted font-bold">Worker Performance</h3>
+					{#each sortedWorkers as w (w.rank)}
+						{@const pct = maxWorkerAvg > 0 ? (w.avgMs / maxWorkerAvg) * 100 : 0}
+						{@const barColor = pct < 50 ? 'bg-success' : pct < 80 ? 'bg-warning' : 'bg-error'}
+						<div class="px-3 py-2 bg-surface rounded-lg border border-border text-xs min-h-[44px]">
+							<div class="flex items-center gap-2 mb-1">
+								<span class="w-6 text-center font-bold {w.rank === sortedWorkers[0].rank ? 'text-success' : 'text-muted'}">
+									#{w.rank}
+								</span>
+								<span class="flex-1 text-foreground font-mono">{w.avgMs.toFixed(0)}ms</span>
+								<span class="text-[10px] text-muted">{w.nCycles} cycles</span>
+								<span class="text-[10px] font-bold {pct < 50 ? 'text-success' : pct < 80 ? 'text-warning' : 'text-error'}">
+									{w.score.toFixed(0)}
+								</span>
+							</div>
+							<div class="w-full h-1.5 bg-background rounded-full overflow-hidden">
+								<div class="{barColor} h-full rounded-full transition-all duration-300" style="width: {pct}%"></div>
+							</div>
+						</div>
+					{/each}
+				</div>
+			{/if}
 
 			<!-- Stop button -->
 			<button

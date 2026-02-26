@@ -78,6 +78,18 @@ export interface SpecStats {
 	tokPerS: number;
 	specCycles: number;
 	tokensPredictedTotal: number;
+	currentNDraft?: number;
+	rollingAcceptRate?: number;
+}
+
+export interface WorkerStats {
+	rank: number;
+	avgMs: number;
+	minMs: number;
+	maxMs: number;
+	nCycles: number;
+	score: number;
+	stdMs: number;
 }
 
 export interface Conversation {
